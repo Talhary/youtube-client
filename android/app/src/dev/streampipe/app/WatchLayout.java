@@ -74,6 +74,9 @@ final class WatchLayout extends FrameLayout {
     private final FeedList details;
     private final CommentsPanel comments;
     private final LiveChatPanel chat;
+    private final LinearLayout commentsCard;
+    private final ImageView teaserAvatar;
+    private final TextView teaserText;
     private final LinearLayout chatButton;
     /** The live chat handle of the current video, when it has one. */
     private String chatToken;
@@ -206,24 +209,7 @@ final class WatchLayout extends FrameLayout {
         });
         actions.addView(audioButton, pillGap());
 
-        LinearLayout commentsButton = Ui.row(c);
-        commentsButton.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(14), Ui.dp(8));
-        commentsButton.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(Ui.RIPPLE), Ui.rounded(Ui.PANEL, 18), null));
-        commentsButton.addView(Ui.icon(c, R.drawable.ic_comment, Ui.TEXT), Ui.lin(Ui.dp(20), Ui.dp(20)));
-        TextView commentsLabel = Ui.text(c, 13, Ui.TEXT, true);
-        commentsLabel.setText("Comments");
-        commentsLabel.setPadding(Ui.dp(8), 0, 0, 0);
-        commentsButton.addView(commentsLabel, Ui.lin(Ui.WRAP, Ui.WRAP));
-        commentsButton.setContentDescription("Comments");
-        commentsButton.setOnClickListener(v -> {
-            if (current != null) {
-                openComments();
-            }
-        });
-        LinearLayout.LayoutParams cbl = Ui.lin(Ui.WRAP, Ui.WRAP);
-        cbl.leftMargin = Ui.dp(10);
-        actions.addView(commentsButton, cbl);
+        // Comments are a card under the description, as on YouTube; not a button here.
         chatButton = pill(c, R.drawable.ic_chat, "Live chat", v -> {
             if (chatToken != null) {
                 WatchLayout.this.chat.open(chatToken);
@@ -293,6 +279,36 @@ final class WatchLayout extends FrameLayout {
         });
         header.addView(desc, Ui.lin(Ui.MATCH, Ui.WRAP));
 
+        // Comments: a card with the top comment; tapping it opens them all.
+        commentsCard = Ui.column(c);
+        commentsCard.setPadding(Ui.dp(14), Ui.dp(12), Ui.dp(14), Ui.dp(12));
+        commentsCard.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Ui.RIPPLE), Ui.rounded(Ui.PANEL, 12), null));
+        TextView commentsTitle = Ui.text(c, 14, Ui.TEXT, true);
+        commentsTitle.setText("Comments");
+        commentsCard.addView(commentsTitle);
+        LinearLayout teaserRow = Ui.row(c);
+        teaserRow.setPadding(0, Ui.dp(10), 0, 0);
+        teaserAvatar = new ImageView(c);
+        teaserAvatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        teaserAvatar.setBackgroundColor(Ui.BG);
+        Ui.clipCircle(teaserAvatar);
+        teaserRow.addView(teaserAvatar, Ui.lin(Ui.dp(26), Ui.dp(26)));
+        teaserText = Ui.lines(Ui.text(c, 13, Ui.TEXT, false), 2);
+        teaserText.setPadding(Ui.dp(10), 0, 0, 0);
+        teaserText.setLineSpacing(Ui.dp(2), 1f);
+        teaserRow.addView(teaserText, Ui.weight(Ui.WRAP));
+        commentsCard.addView(teaserRow, Ui.lin(Ui.MATCH, Ui.WRAP));
+        commentsCard.setContentDescription("Comments");
+        commentsCard.setOnClickListener(v -> {
+            if (current != null) {
+                openComments();
+            }
+        });
+        LinearLayout.LayoutParams ccl = Ui.lin(Ui.MATCH, Ui.WRAP);
+        ccl.setMargins(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(6));
+        header.addView(commentsCard, ccl);
+
         // Chapters: one card per chapter, tap to go there.
         LinearLayout chapters = Ui.column(c);
         TextView chaptersTitle = Ui.text(c, 14, Ui.TEXT, true);
@@ -320,6 +336,9 @@ final class WatchLayout extends FrameLayout {
             }
         });
         details.setHeader(header);
+        if (host instanceof Nav) {
+            details.setMenu((Nav) host, false);
+        }
         details.setEmptyText("");
         details.setSource(this::loadDetails);
         addView(details, new LayoutParams(Ui.MATCH, Ui.MATCH));
@@ -571,6 +590,32 @@ final class WatchLayout extends FrameLayout {
             chapterRow.addView(card, lp);
         }
         chapterBox.setVisibility(at.length > 0 ? VISIBLE : GONE);
+    }
+
+    /** Fill the comments card with the video's top comment. */
+    private void loadCommentTeaser(final String id) {
+        if (current != null && current.localUri != null) {
+            // Downloaded videos may be watched offline; comments load when opened.
+            teaserText.setText("Tap to see comments");
+            teaserAvatar.setVisibility(GONE);
+            return;
+        }
+        teaserText.setText("Loading comments…");
+        teaserText.setTextColor(Ui.MUTE);
+        teaserAvatar.setVisibility(GONE);
+        comments.preload(id, (first, more, err) -> {
+            if (current == null || !id.equals(current.id)) {
+                return;
+            }
+            if (first == null) {
+                teaserText.setText(err != null ? "Comments did not load. Tap to try again." : "No comments yet, or they are turned off.");
+                return;
+            }
+            teaserText.setTextColor(Ui.TEXT);
+            teaserText.setText(first.optString("text"));
+            teaserAvatar.setVisibility(VISIBLE);
+            Images.load(teaserAvatar, Core.url(Core.str(first, "avatar")));
+        });
     }
 
     /** Captions, preview pictures and chat of the video now playing. */
@@ -849,7 +894,10 @@ final class WatchLayout extends FrameLayout {
         if (!same) {
             // After the player has taken the new video (it drops the old one's extras).
             final String id = video.id;
-            post(() -> loadExtras(id));
+            post(() -> {
+                loadExtras(id);
+                loadCommentTeaser(id);
+            });
         }
         if (!open) {
             open = true;
@@ -908,6 +956,7 @@ final class WatchLayout extends FrameLayout {
         i.id = id;
         current = i;
         comments.reset();
+        loadCommentTeaser(id);
         showLoading(null);
         bindHeader(null);
         details.load();
@@ -1050,6 +1099,20 @@ final class WatchLayout extends FrameLayout {
                 java.util.List<Core.Item> queued = Downloads.get().queuedAfter(v.id);
                 if (!queued.isEmpty()) {
                     related.items.addAll(0, queued);
+                }
+            }
+            if (!local && Core.get().prefetch) {
+                // The first videos under Up next are the likely next ones (autoplay plays the
+                // first): get them ready now, even while they are below the details.
+                org.json.JSONArray ids = new org.json.JSONArray();
+                for (Core.Item i : related.items) {
+                    if (i.type == Core.Item.VIDEO && !i.live && ids.length() < 2) {
+                        ids.put(i.id);
+                    }
+                }
+                if (ids.length() > 0) {
+                    // After this video's own start, so they do not compete with it.
+                    postDelayed(() -> Core.get().send("prefetch_streams", "ids", ids), 2500);
                 }
             }
             nextUp = null;

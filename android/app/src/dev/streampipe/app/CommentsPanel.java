@@ -39,6 +39,25 @@ final class CommentsPanel extends FrameLayout {
     /** Answers for an earlier video are ignored. */
     private int generation;
 
+    /** Told about the first comment once the first page is in (the card under the description). */
+    interface Teaser {
+        /** `first` is null when there are none; `error` is null on success. */
+        void first(JSONObject first, boolean more, String error);
+    }
+
+    private Teaser teaser;
+
+    /** Load the first page of `id` now, without showing the panel. */
+    void preload(String id, Teaser t) {
+        teaser = t;
+        if (id != null && !id.equals(videoId)) {
+            videoId = id;
+            load();
+        } else if (!items.isEmpty()) {
+            t.first(items.get(0), next >= 0 || items.size() > 1, null);
+        }
+    }
+
     CommentsPanel(Context c) {
         super(c);
         setBackgroundColor(Ui.BG);
@@ -138,6 +157,7 @@ final class CommentsPanel extends FrameLayout {
         animate().cancel();
         setVisibility(GONE);
         videoId = null;
+        teaser = null;
         dropCursor();
         items.clear();
         adapter.notifyDataSetChanged();
@@ -166,11 +186,19 @@ final class CommentsPanel extends FrameLayout {
             busy.setVisibility(GONE);
             if (err != null || e == null) {
                 show(err == null ? "Could not load comments." : err);
+                if (teaser != null) {
+                    teaser.first(null, false, err == null ? "Could not load comments." : err);
+                }
+                // A later open tries again.
+                videoId = null;
                 return;
             }
             append(e.optJSONObject("ok"));
             if (items.isEmpty()) {
                 show("No comments yet, or comments are turned off for this video.");
+            }
+            if (teaser != null) {
+                teaser.first(items.isEmpty() ? null : items.get(0), next >= 0 || items.size() > 1, null);
             }
         }, "comments", "id", videoId);
     }

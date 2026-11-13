@@ -744,6 +744,9 @@ pub(crate) struct CommentAuthor {
     pub is_artist: bool,
     #[serde(default)]
     pub is_creator: bool,
+    /// The author's picture; newer answers put it here instead of the payload's `avatar`.
+    #[serde(default)]
+    pub avatar_thumbnail_url: String,
 }
 
 #[derive(Debug, Deserialize)]

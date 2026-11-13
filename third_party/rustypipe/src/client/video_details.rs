@@ -631,9 +631,17 @@ fn map_comment_vm(
             .into(),
         by_owner: ce.author.as_ref().map(|a| a.is_creator).unwrap_or_default(),
         author: ce.author.map(|a| ChannelTag {
+            avatar: {
+                let from_payload: Vec<crate::model::Thumbnail> = ce.avatar.image.into();
+                if from_payload.is_empty() && !a.avatar_thumbnail_url.is_empty() {
+                    // StreamPipe patch: YouTube moved the picture to `author.avatarThumbnailUrl`.
+                    vec![crate::model::Thumbnail { url: a.avatar_thumbnail_url.clone(), width: 88, height: 88 }]
+                } else {
+                    from_payload
+                }
+            },
             id: a.channel_id,
             name: a.display_name,
-            avatar: ce.avatar.image.into(),
             verification: if a.is_artist {
                 Verification::Artist
             } else if a.is_verified {
