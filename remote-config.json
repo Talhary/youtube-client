@@ -1,0 +1,6 @@
+{
+  "client_order": ["ios", "desktop", "tv", "mobile"],
+  "device_login": true,
+  "max_connections": null,
+  "message": null
+}

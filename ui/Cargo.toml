@@ -1,0 +1,10 @@
+[package]
+name = "streampipe-ui"
+description = "StreamPipe egui interface shared by the desktop app and the Android browse UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+streampipe-core = { path = "../core" }
+egui = "0.37"

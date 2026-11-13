@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["core", "desktop", "android/rust", "ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Vendored rustypipe with a deobfuscator patch for 2025+ player scripts (see third_party/rustypipe).
+[patch.crates-io]
+rustypipe = { path = "third_party/rustypipe" }
+# rquickjs-sys 0.9.0 plus bindings for Android targets (copies of the matching Linux ones):
+# upstream ships none, and without them rustypipe does not build for Android.
+rquickjs-sys = { path = "third_party/rquickjs-sys" }

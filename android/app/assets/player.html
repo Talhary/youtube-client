@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>StreamPipe player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; background: #000; }
+  /* Zoom to fill: the picture covers the view and its edges are cropped. */
+  html.sp-fill video { object-fit: cover; }
+  /* Audio only: no picture is fetched; the thumbnail shows instead. */
+  #cover { position: fixed; inset: 0; background: #000 center / contain no-repeat; display: none; }
+  html.sp-audio #cover { display: block; }
+  html.sp-audio video { background: transparent; }
+</style>
+</head>
+<body>
+<div id="cover"></div>
+<video id="v" playsinline disablepictureinpicture></video>
+<script>
+// StreamPipe direct player.
+//
+// Plays a video straight from its stream URLs with the web view's own <video> element and
+// Media Source Extensions, so decoding runs on the device's hardware decoders. The app
+// resolves the streams (core/src/ytp.rs) and serves their bytes at /s/<key>?range=a-b; this
+// page fetches each stream segment by segment and hands it to the decoder.
+//
+// The app drives it through window.__sp (load, cmd) and hears back through SPP.post, the
+// same messages the YouTube-page player sends.
+(function () {
+  'use strict';
+  var v = document.getElementById('v');
+  var cover = document.getElementById('cover');
+  var post = function (o) { try { window.SPP.post(JSON.stringify(o)); } catch (e) {} };
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+  var session = 0;        // bumped on every (re)load; older work stops when it changes
+  var info = null;        // what the app sent for the current video
+  var tracks = [];
+  var media = null;       // the MediaSource in use
+  var current = null;     // the video format being played (null in audio-only)
+  var options = [];       // one playable video format per height, best first
+  var prefs = { quality: 'auto', rate: 1, audioOnly: false };
+
+  // ---------------------------------------------------------------- format choice
+  // A format is usable if the device can decode it; hardware decoding is preferred.
+  function probe(f) {
+    var fallback = { ok: !!window.MediaSource && MediaSource.isTypeSupported(f.mime), hw: false };
+    if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.decodingInfo) return Promise.resolve(fallback);
+    return navigator.mediaCapabilities.decodingInfo({
+      type: 'media-source',
+      video: { contentType: f.mime, width: Math.round(f.height * 16 / 9), height: f.height, bitrate: f.bitrate || 1000000, framerate: f.fps || 30 }
+    }).then(function (r) { return { ok: r.supported, hw: r.supported && r.powerEfficient }; }, function () { return fallback; });
+  }
+
+  // Per height: a hardware-decoded format beats a software one; among hardware ones the
+  // more efficient codec (AV1) wins; without hardware, H.264 is the cheapest to decode.
+  function buildOptions(video) {
+    // Only MP4 streams: their segment index is read below. (WebM/VP9 is not handled.)
+    var list = video.filter(function (f) { return /^video\/mp4/.test(f.mime) && f.size; });
+    return Promise.all(list.map(probe)).then(function (caps) {
+      var byHeight = {};
+      list.forEach(function (f, i) {
+        if (!caps[i].ok) return;
+        var av1 = f.codec === 'av1';
+        var score = (caps[i].hw ? 1000 : 0) + (caps[i].hw ? (av1 ? 100 : 50) : (av1 ? 0 : 50)) + Math.min(49, (f.fps || 30) / 2);
+        var key = f.height;
+        if (!byHeight[key] || score > byHeight[key].score) byHeight[key] = { f: f, hw: caps[i].hw, score: score };
+      });
+      return Object.keys(byHeight).map(Number).sort(function (a, b) { return b - a; }).map(function (h) { return byHeight[h]; });
+    });
+  }
+
+  // Quality names are YouTube's, so one saved choice serves both players.
+  var NAMES = { 144: 'tiny', 240: 'small', 360: 'medium', 480: 'large', 720: 'hd720', 1080: 'hd1080', 1440: 'hd1440', 2160: 'hd2160', 4320: 'highres' };
+  function nameOf(height) { return NAMES[height] || ('h' + height); }
+  function heightOf(name) {
+    for (var h in NAMES) if (NAMES[h] === name) return Number(h);
+    return parseInt(String(name).replace(/^h/, ''), 10) || 720;
+  }
+
+  function pickVideo() {
+    if (!options.length) return null;
+    if (prefs.quality !== 'auto') {
+      var want = heightOf(prefs.quality);
+      // The chosen height, or the nearest one below it that this video has.
+      for (var i = 0; i < options.length; i++) if (options[i].f.height <= want) return options[i].f;
+      return options[options.length - 1].f;
+    }
+    // Auto: enough for this screen (at least 720p), hardware-decoded when possible.
+    var cap = Math.max(720, Math.round(Math.min(screen.width, screen.height) * (window.devicePixelRatio || 1)));
+    var fits = options.filter(function (o) { return o.f.height <= cap; });
+    var pool = fits.length ? fits : [options[options.length - 1]];
+    var hw = pool.filter(function (o) { return o.hw; });
+    return (hw.length ? hw[0] : pool[0]).f;
+  }
+
+  // ---------------------------------------------------------------- fetching
+  // One refused or failed request does not end the video: it is asked again a few times.
+  function get(f, a, b, attempt) {
+    attempt = attempt || 0;
+    var my = session;
+    return fetch('/s/' + f.key + '?range=' + a + '-' + b).then(function (r) {
+      if (!r.ok) throw new Error('stream answered ' + r.status);
+      return r.arrayBuffer();
+    }).catch(function (e) {
+      // A fresh address can be refused for its first seconds, so the wait stays short.
+      if (attempt >= 14 || my !== session) throw e;
+      post({ type: 'log', text: 'direct: ' + f.key + ' ' + a + '-' + b + ' failed (' + (e && e.message) + '), try ' + (attempt + 2) });
+      return sleep(attempt < 10 ? 300 : 1500).then(function () { return get(f, a, b, attempt + 1); });
+    });
+  }
+
+  // The segment index (sidx box) of a fragmented MP4: where each segment's bytes are and
+  // which stretch of time it covers.
+  function parseIndex(buf, indexEnd) {
+    var d = new DataView(buf);
+    if (String.fromCharCode(d.getUint8(4), d.getUint8(5), d.getUint8(6), d.getUint8(7)) !== 'sidx') throw new Error('no segment index');
+    var version = d.getUint8(8), p = 16, timescale = d.getUint32(p), earliest, first;
+    p += 4;
+    if (version === 0) { earliest = d.getUint32(p); first = d.getUint32(p + 4); p += 8; }
+    else { earliest = d.getUint32(p) * 4294967296 + d.getUint32(p + 4); first = d.getUint32(p + 8) * 4294967296 + d.getUint32(p + 12); p += 16; }
+    p += 2;
+    var count = d.getUint16(p);
+    p += 2;
+    var offset = indexEnd + 1 + first, t = earliest, segs = [];
+    for (var i = 0; i < count; i++) {
+      var size = d.getUint32(p) & 0x7fffffff, dur = d.getUint32(p + 4);
+      p += 12;
+      segs.push({ start: offset, end: offset + size - 1, t: t / timescale, d: dur / timescale });
+      offset += size;
+      t += dur;
+    }
+    return segs;
+  }
+
+  function append(sb, buf) {
+    return new Promise(function (resolve, reject) {
+      var go = function () {
+        try { sb.appendBuffer(buf); } catch (e) { reject(e); return; }
+        sb.addEventListener('updateend', resolve, { once: true });
+      };
+      if (sb.updating) sb.addEventListener('updateend', go, { once: true }); else go();
+    });
+  }
+
+  function remove(sb, a, b) {
+    return new Promise(function (resolve) {
+      if (b <= a) { resolve(); return; }
+      var go = function () {
+        try { sb.remove(a, b); } catch (e) { resolve(); return; }
+        sb.addEventListener('updateend', resolve, { once: true });
+      };
+      if (sb.updating) sb.addEventListener('updateend', go, { once: true }); else go();
+    });
+  }
+
+  // Seconds buffered from the current position onward.
+  function ahead(sb) {
+    var b, t = v.currentTime;
+    try { b = sb.buffered; } catch (e) { return 0; }
+    for (var i = 0; i < b.length; i++) if (t >= b.start(i) - 0.3 && t <= b.end(i)) return b.end(i) - t;
+    return 0;
+  }
+
+  function Track(f) {
+    this.f = f;
+    this.sb = media.addSourceBuffer(f.mime);
+    this.segs = [];
+    this.next = 0;
+    this.moves = 0;      // bumped when the position jumps; an in-flight fetch is then dropped
+    this.started = false;
+    this.done = false;
+  }
+  // Where a stream's header and segment index are, read from the start of the file: the
+  // boxes before the index (ftyp, moov) are the header, the "sidx" box is the index.
+  function locate(f, bytes) {
+    bytes = Math.min(bytes || 4096, f.size);
+    return get(f, 0, bytes - 1).then(function (buf) {
+      var d = new DataView(buf), p = 0;
+      while (p + 8 <= buf.byteLength) {
+        var len = d.getUint32(p), type = String.fromCharCode(d.getUint8(p + 4), d.getUint8(p + 5), d.getUint8(p + 6), d.getUint8(p + 7));
+        if (len < 8 || type === 'moof' || type === 'mdat') throw new Error('no segment index');
+        if (type === 'sidx') {
+          if (p + len > buf.byteLength) return locate(f, p + len);
+          return { buf: buf, init: [0, p - 1], index: [p, p + len - 1] };
+        }
+        p += len;
+      }
+      if (bytes >= f.size || bytes > 8388608) throw new Error('no segment index');
+      return locate(f, Math.max(bytes * 4, p + 4096));
+    });
+  }
+  Track.prototype.init = function () {
+    var f = this.f, self = this;
+    var use = function (buf, a, init, index) {
+      self.segs = parseIndex(buf.slice(index[0] - a, index[1] - a + 1), index[1]);
+      return append(self.sb, buf.slice(init[0] - a, init[1] - a + 1));
+    };
+    if (!f.init || !f.index) return locate(f).then(function (at) { return use(at.buf, 0, at.init, at.index); });
+    var a = Math.min(f.init[0], f.index[0]), b = Math.max(f.init[1], f.index[1]);
+    return get(f, a, b).then(function (buf) { return use(buf, a, f.init, f.index); });
+  };
+  Track.prototype.seek = function (t) {
+    var i = 0;
+    while (i < this.segs.length && t >= this.segs[i].t + this.segs[i].d) i++;
+    this.next = i;
+    this.moves++;
+    this.done = false;
+  };
+  Track.prototype.pump = function (my) {
+    var self = this, f = this.f;
+    var step = function () {
+      if (my !== session) return Promise.resolve();
+      if (self.next >= self.segs.length) { self.done = true; finishIfDone(my); return sleep(500).then(step); }
+      if (ahead(self.sb) > 40) return sleep(400).then(step);
+      // A small first request starts playback sooner; later ones carry about 1.5 MB.
+      var limit = self.started ? 1572864 : (f.kind === 'audio' ? 131072 : 393216);
+      var i = self.next, start = self.segs[i].start, end = self.segs[i].end;
+      while (i + 1 < self.segs.length && self.segs[i + 1].end - start < limit) { i++; end = self.segs[i].end; }
+      var moves = self.moves;
+      return get(f, start, end).then(function (buf) {
+        if (my !== session || moves !== self.moves) return null;   // stale: the position jumped
+        return append(self.sb, buf).catch(function (e) {
+          if (e && e.name === 'QuotaExceededError') {
+            // The decoder's buffer is full: drop what is well behind the position and retry.
+            return remove(self.sb, 0, Math.max(0, v.currentTime - 15)).then(function () { return append(self.sb, buf); });
+          }
+          throw e;
+        }).then(function () { self.next = i + 1; self.started = true; });
+      }).then(step);
+    };
+    return step();
+  };
+
+  function finishIfDone(my) {
+    if (my !== session || !media || media.readyState !== 'open') return;
+    if (tracks.every(function (t) { return t.done && !t.sb.updating; })) {
+      try { media.endOfStream(); } catch (e) {}
+    }
+  }
+
+  // ---------------------------------------------------------------- loading
+  function teardown() {
+    session++;
+    tracks = [];
+    media = null;
+    try { v.pause(); } catch (e) {}
+    if (v.src) { try { URL.revokeObjectURL(v.src); } catch (e) {} }
+    v.removeAttribute('src');
+    try { v.load(); } catch (e) {}
+  }
+
+  function fail(my, id, e) {
+    if (my !== session) return;
+    post({ type: 'error', id: id, text: String(e && e.message || e).slice(0, 200) });
+  }
+
+  // (Re)build the player for the current video, starting at `at` seconds.
+  // A downloaded file: the element plays it by itself (the app serves it at data.url).
+  function startLocal(at, autoplay) {
+    var my = session, data = info;
+    var hidden = !!data.audioFile || prefs.audioOnly;
+    current = null;
+    document.documentElement.classList.toggle('sp-audio', hidden);
+    cover.style.backgroundImage = hidden ? 'url(https://i.ytimg.com/vi/' + data.id + '/hqdefault.jpg?sp=1)' : '';
+    v.addEventListener('loadedmetadata', function () {
+      if (my !== session) return;
+      if (at > 0.5) v.currentTime = at;
+      v.playbackRate = prefs.rate;
+      if (autoplay) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+    }, { once: true });
+    v.src = data.url;
+  }
+
+  function start(at, autoplay) {
+    teardown();
+    var my = session, data = info;
+    if (!data) return;
+    if (data.local) { startLocal(at, autoplay); return; }
+    var audio = data.audio;
+    current = prefs.audioOnly ? null : pickVideo();
+    if (!audio || (!current && !prefs.audioOnly)) { fail(my, data.id, 'no stream this device can play'); return; }
+    document.documentElement.classList.toggle('sp-audio', !current);
+    cover.style.backgroundImage = current ? '' : 'url(https://i.ytimg.com/vi/' + data.id + '/hqdefault.jpg?sp=1)';
+    v.poster = 'https://i.ytimg.com/vi/' + data.id + '/hqdefault.jpg?sp=1';
+    media = new MediaSource();
+    v.src = URL.createObjectURL(media);
+    media.addEventListener('sourceopen', function () {
+      if (my !== session) return;
+      try {
+        if (data.duration) media.duration = data.duration;
+        tracks = (current ? [current, audio] : [audio]).map(function (f) { return new Track(f); });
+      } catch (e) { fail(my, data.id, e); return; }
+      Promise.all(tracks.map(function (t) { return t.init(); })).then(function () {
+        if (my !== session) return;
+        if (at > 0.5) {
+          tracks.forEach(function (t) { t.seek(at); });
+          v.currentTime = at;
+        }
+        v.playbackRate = prefs.rate;
+        if (autoplay) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+        tracks.forEach(function (t) { t.pump(my).catch(function (e) { fail(my, data.id, e); }); });
+      }).catch(function (e) { fail(my, data.id, e); });
+    }, { once: true });
+  }
+
+  v.addEventListener('seeking', function () {
+    var t = v.currentTime;
+    tracks.forEach(function (track) {
+      var b = track.sb.buffered, inside = false;
+      for (var i = 0; i < b.length; i++) if (t >= b.start(i) && t < b.end(i) - 0.2) inside = true;
+      if (!inside) track.seek(t);
+    });
+  });
+
+  // ---------------------------------------------------------------- reports to the app
+  var lastPlaying = null;
+  var report = function () {
+    var now = !v.paused && !v.ended && !!info;
+    if (now !== lastPlaying) { lastPlaying = now; post({ type: 'playing', playing: now }); }
+  };
+  ['play', 'playing', 'pause', 'ended', 'emptied'].forEach(function (n) { v.addEventListener(n, report); });
+  v.addEventListener('ended', function () { if (info) post({ type: 'ended', id: info.id }); });
+  v.addEventListener('error', function () {
+    if (info && v.error) fail(session, info.id, 'decoder error ' + v.error.code + ' ' + (v.error.message || ''));
+  });
+
+  // The app draws the controls; it asks for this list when its gear button is pressed.
+  function sendSettings() {
+    if (!info) return;
+    post({
+      type: 'settings',
+      qualities: options.map(function (o) {
+        return { id: nameOf(o.f.height), label: o.f.height + 'p' + (o.f.fps > 30 ? o.f.fps : '') + (o.hw ? '' : ' (software)') };
+      }),
+      quality: current ? nameOf(current.height) : '',
+      preferred: prefs.quality,
+      rates: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
+      rate: v.playbackRate,
+      captions: [], caption: ''
+    });
+  }
+
+  // Position, length and buffer for the app's seek bar.
+  var lastTime = '';
+  function sendTime() {
+    if (!info) return;
+    var end = 0, t = v.currentTime, b = v.buffered;
+    for (var i = 0; i < b.length; i++) if (t >= b.start(i) - 0.3 && t <= b.end(i)) end = b.end(i);
+    var d = isFinite(v.duration) && v.duration > 0 ? v.duration : (info.duration || 0);
+    var o = { type: 'time', t: Math.round(t * 10) / 10, d: Math.round(d), b: Math.round(end), paused: v.paused, waiting: !v.paused && v.readyState < 3 };
+    var text = JSON.stringify(o);
+    if (text !== lastTime) { lastTime = text; post(o); }
+  }
+  setInterval(sendTime, 500);
+  ['seeking', 'seeked', 'waiting', 'playing', 'pause', 'durationchange'].forEach(function (n) { v.addEventListener(n, sendTime); });
+
+  // ---------------------------------------------------------------- the app's side
+  window.__sp = {
+    // data: { id, duration, video: [format…], audio: format, quality, rate, audioOnly }
+    load: function (data) {
+      info = data;
+      prefs.quality = data.quality || 'auto';
+      prefs.rate = data.rate || 1;
+      prefs.audioOnly = !!data.audioOnly;
+      if (data.local) {
+        options = [];
+        post({ type: 'video', id: data.id });
+        start(0, true);
+        return;
+      }
+      buildOptions(data.video || []).then(function (list) {
+        if (info !== data) return;
+        options = list;
+        post({ type: 'video', id: data.id });
+        start(0, true);
+      });
+    },
+    // Other addresses for the video that is playing: carry on from the same position.
+    swap: function (data) {
+      if (!info || info.id !== data.id) { this.load(data); return; }
+      var at = v.currentTime, playing = !v.paused || !media;
+      info = data;
+      buildOptions(data.video || []).then(function (list) {
+        if (info !== data) return;
+        options = list;
+        start(at, playing);
+      });
+    },
+    cmd: function (what, arg) {
+      if (what === 'compact') return;
+      if (what === 'fill') { document.documentElement.classList.toggle('sp-fill', !!arg); return; }
+      if (what === 'shape') return;
+      if (what === 'stop') { info = null; teardown(); report(); return; }
+      if (!info) return;
+      if (what === 'settings') { sendSettings(); return; }
+      if (what === 'seek' || what === 'seekby') {
+        var d = isFinite(v.duration) && v.duration > 0 ? v.duration : (info.duration || 0);
+        var to = what === 'seek' ? Number(arg) : v.currentTime + Number(arg);
+        if (isFinite(to)) { v.currentTime = Math.max(0, Math.min(d > 1 ? d - 0.5 : to, to)); sendTime(); }
+        return;
+      }
+      if (what === 'toggle') what = v.paused ? 'play' : 'pause';
+      if (what === 'pause') v.pause();
+      else if (what === 'play') { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+      else if (what === 'rate') { prefs.rate = Number(arg) || 1; v.playbackRate = prefs.rate; }
+      else if (what === 'quality') {
+        prefs.quality = String(arg || 'auto');
+        var next = pickVideo();
+        if (!prefs.audioOnly && next !== current) start(v.currentTime, !v.paused);
+      }
+      else if (what === 'audio') {
+        if (prefs.audioOnly === !!arg) return;
+        prefs.audioOnly = !!arg;
+        if (info.local) {
+          // The same file keeps playing; only the picture is covered or shown.
+          var hidden = !!info.audioFile || prefs.audioOnly;
+          document.documentElement.classList.toggle('sp-audio', hidden);
+          cover.style.backgroundImage = hidden ? 'url(https://i.ytimg.com/vi/' + info.id + '/hqdefault.jpg?sp=1)' : '';
+          return;
+        }
+        start(v.currentTime, !v.paused);
+      }
+    }
+  };
+  post({ type: 'loaded', host: location.hostname, direct: true });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+# Build output
+/target/
+/.gobuild/
+/dist/
+/android/build/
+/frontend/node_modules/
+/frontend/dist/
+
+# Signing keys (android/build.sh makes a debug key when none is there)
+*.keystore
+*.jks
+
+# Local state, crash reports and caches
+/bg_snapshot.bin
+/rustypipe_reports/
+/.claude/settings.local.json
+*.log
+
+# Downloaded tools and runtimes (large binaries, fetched or built per machine)
+/third_party/bgutil-ytdlp-pot-provider/
+/third_party/botguard/
+/third_party/deno/
+/third_party/mpv/
+/third_party/nodejs-mobile/
+/third_party/quickjs/
+/third_party/yt-dlp/
+/third_party/yt-dlp-dir/
+/third_party/ytworker/
+/third_party/ffmpeg/
+/third_party/media3/*.aar
+
+# The stream resolver lives in its own repository (talhary-dot/yt-parser); its
+# checkout here also holds session cookies. Build libytp.so from that repository.
+/third_party/yt-parser-src/
+
+# Anything that looks like a session
+cookies*.txt
+*.cookies

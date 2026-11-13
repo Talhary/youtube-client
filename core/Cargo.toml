@@ -1,0 +1,44 @@
+[package]
+name = "streampipe-core"
+description = "StreamPipe shared core: YouTube API, auth, downloads, thumbnails, storage. No UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustypipe = { version = "=0.11.4", default-features = false, features = ["rustls-tls-webpki-roots", "userdata", "rss"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2", "json", "stream"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+directories = "6"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rand = "0.9"
+aes-gcm = "0.10"
+sha2 = "0.10"
+sha1 = "0.10"
+hex = "0.4"
+fs4 = { version = "0.13", features = ["tokio"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "webp", "png"] }
+lru = "0.16"
+time = "0.3.37"
+semver = "1"
+parking_lot = "0.12"
+base64 = "0.22"
+regex = "1"
+# The JS engine the direct stream resolver runs YouTube's challenge solver on (the same
+# version rustypipe uses, so one copy is built).
+rquickjs = "0.9"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+xz2 = { version = "0.1", features = ["static"] }
+
+[dev-dependencies]
+rustypipe = { version = "=0.11.4", default-features = false }
+tempfile = "3"
