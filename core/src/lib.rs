@@ -6,6 +6,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod diagnostics;
+pub mod dial;
 pub mod download;
 pub mod model;
 pub mod music;

@@ -129,6 +129,18 @@ fn item_text(item: &Item) -> ItemText {
     }
 }
 
+/// The red "watched" bar along the bottom of a thumbnail.
+fn watched_bar(app: &App, ui: &Ui, item: &Item, trect: Rect) {
+    let Item::Video(v) = item else { return };
+    let frac = app.store.watched(&v.id).or(v.watched.map(|p| p as f32 / 100.0));
+    let Some(f) = frac.filter(|f| *f > 0.02) else { return };
+    let bar = Rect::from_min_max(egui::pos2(trect.left(), trect.bottom() - 4.0), trect.right_bottom());
+    ui.painter().rect_filled(bar, 0.0, Color32::from_white_alpha(70));
+    let mut done = bar;
+    done.set_width(bar.width() * f.min(1.0));
+    ui.painter().rect_filled(done, 0.0, DANGER);
+}
+
 fn item_badge(ui: &Ui, item: &Item, trect: Rect) {
     match item {
         Item::Video(v) if v.is_live => badge(ui, trect, "LIVE", DANGER, Color32::WHITE),
@@ -196,6 +208,7 @@ pub fn item_row(app: &mut App, ui: &mut Ui, item: &Item, selected: bool) -> Resp
     }
     thumb(app, ui, t.thumb.as_deref(), trect, if t.round { 255 } else { 8 });
     item_badge(ui, item, trect);
+    watched_bar(app, ui, item, trect);
     let text = Rect::from_min_max(egui::pos2(text_x, trect.top()), egui::pos2(rect.right() - 10.0, rect.bottom()));
     text_block(ui, text, &t, 14.0);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -219,6 +232,7 @@ pub fn item_card(app: &mut App, ui: &mut Ui, item: &Item, width: f32, selected: 
     }
     thumb(app, ui, t.thumb.as_deref(), trect, if t.round { 255 } else { 12 });
     item_badge(ui, item, trect);
+    watched_bar(app, ui, item, trect);
     let text = Rect::from_min_max(
         egui::pos2(rect.left() + 2.0, rect.top() + thumb_h + 10.0),
         egui::pos2(rect.right() - 2.0, rect.bottom()),
@@ -268,39 +282,6 @@ pub fn progress(ui: &mut Ui, frac: f32, height: f32) -> Rect {
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
     ui.painter().rect_filled(fill, r, ACCENT);
     rect
-}
-
-/// Seek bar. Returns a new position while the user drags or clicks.
-pub fn seek_bar(ui: &mut Ui, pos: f64, dur: f64, width: f32) -> Option<f64> {
-    let h = 20.0;
-    let (rect, resp) = ui.allocate_exact_size(vec2(width.max(40.0), h), Sense::click_and_drag());
-    let active = resp.hovered() || resp.dragged();
-    let grow = motion::toggle(ui.ctx(), resp.id.with("knob"), active, motion::HOVER);
-    let track = Rect::from_center_size(rect.center(), vec2(rect.width(), 4.0 + 2.0 * grow));
-    let p = ui.painter();
-    p.rect_filled(track, CornerRadius::same(3), BORDER);
-    let frac = if dur > 0.0 { (pos / dur).clamp(0.0, 1.0) } else { 0.0 } as f32;
-    let mut done = track;
-    done.set_width(track.width() * frac);
-    p.rect_filled(done, CornerRadius::same(3), ACCENT);
-    p.circle_filled(egui::pos2(done.right(), track.center().y), 4.0 + 3.0 * grow, ACCENT);
-    resp.widget_info(|| {
-        egui::WidgetInfo::slider(true, pos, format!("Position {} of {}", fmt_time(pos), fmt_time(dur)))
-    });
-    if resp.hovered() && dur > 0.0 {
-        if let Some(pt) = resp.hover_pos() {
-            let f = ((pt.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64;
-            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), resp.id.with("tip"), egui::PopupAnchor::Pointer)
-                .show(|ui| ui.label(fmt_time(f * dur)));
-        }
-    }
-    if (resp.dragged() || resp.clicked()) && dur > 0.0 {
-        if let Some(pt) = resp.interact_pointer_pos() {
-            let f = ((pt.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64;
-            return Some(f * dur);
-        }
-    }
-    None
 }
 
 /// Accent-filled button for primary actions.

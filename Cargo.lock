@@ -5108,6 +5108,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "image",
+ "libloading",
  "libmpv2",
  "libmpv2-sys",
  "open",
@@ -5173,6 +5174,8 @@ name = "streampipe-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "serde",
+ "serde_json",
  "streampipe-core",
 ]
 

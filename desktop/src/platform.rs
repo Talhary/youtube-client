@@ -5,6 +5,8 @@ use streampipe_ui::{FileCallback, FileDialog, FormFactor, Platform};
 pub struct Desktop {
     /// Where the sign-in window keeps its throwaway browser profile.
     pub signin_profile: std::path::PathBuf,
+    /// The app's config folder.
+    pub config_dir: std::path::PathBuf,
 }
 
 impl Platform for Desktop {
@@ -47,6 +49,10 @@ impl Platform for Desktop {
 
     fn supports_browser_sign_in(&self) -> bool {
         true
+    }
+
+    fn data_dir(&self) -> Option<std::path::PathBuf> {
+        Some(self.config_dir.clone())
     }
 
     fn os_reduced_motion(&self) -> bool {

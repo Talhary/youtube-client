@@ -5,9 +5,13 @@
 //! command/event channels in [`streampipe_core::service`].
 
 mod app;
+mod extra;
 mod motion;
+mod music;
+mod store;
 mod theme;
 mod views;
+mod watch;
 mod widgets;
 
 use std::path::{Path, PathBuf};
@@ -94,6 +98,10 @@ pub trait Player {
     fn throughput_bps(&self) -> Option<u64> {
         None
     }
+    /// Play the file again from the start when it ends.
+    fn set_loop(&mut self, _on: bool) {}
+    /// Even out loudness ("stable volume") when the video has no levelled sound track.
+    fn set_leveller(&mut self, _on: bool) {}
     /// Lets a shell reach its concrete player (e.g. to free GL resources on exit).
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
@@ -130,6 +138,10 @@ pub trait Platform {
     }
     fn supports_browser_sign_in(&self) -> bool {
         false
+    }
+    /// A folder where the interface may keep small files (resume positions, search history).
+    fn data_dir(&self) -> Option<PathBuf> {
+        None
     }
     /// Notify the shell that the app wants playback to continue in the background.
     fn background_playback(&self, _playing: bool) {}

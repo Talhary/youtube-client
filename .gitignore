@@ -36,3 +36,4 @@
 # Anything that looks like a session
 cookies*.txt
 *.cookies
+/third_party/ytp/

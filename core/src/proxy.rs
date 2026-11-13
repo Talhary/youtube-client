@@ -208,6 +208,35 @@ async fn fetch(
     Err(last)
 }
 
+/// Fetch a piece; if googlevideo refuses it, the address may be a preview that the full
+/// answer replaces any moment (the core resolves the full streams right after the quick ones,
+/// keeping the same local address for the same file). Wait for that and continue on it, so
+/// the player never sees the refusal. Answers the response and the source it came from.
+async fn fetch_waiting(
+    http: &reqwest::Client,
+    reg: &Arc<Mutex<Registry>>,
+    token: &str,
+    src: &Source,
+    start: u64,
+    end: u64,
+) -> Result<(reqwest::Response, Source), u16> {
+    match fetch(http, src, start, end).await {
+        Err(403) => {
+            let until = std::time::Instant::now() + Duration::from_secs(15);
+            while std::time::Instant::now() < until {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let now = reg.lock().sources.get(token).cloned();
+                if let Some(next) = now.filter(|n| n.url != src.url) {
+                    tracing::info!("proxy: a refused stream was replaced; continuing from byte {start} on the new address");
+                    return fetch(http, &next, start, end).await.map(|r| (r, next));
+                }
+            }
+            Err(403)
+        }
+        other => other.map(|r| (r, src.clone())),
+    }
+}
+
 async fn serve(sock: TcpStream, reg: Arc<Mutex<Registry>>, http: reqwest::Client) -> std::io::Result<()> {
     let (r, mut w) = sock.into_split();
     let mut reader = BufReader::new(r);
@@ -264,8 +293,8 @@ async fn serve(sock: TcpStream, reg: Arc<Mutex<Registry>>, http: reqwest::Client
 
         // Open the first upstream piece before answering, so failures map to real status codes.
         let first = if method == "GET" {
-            match fetch(&http, &src, start, (start + piece(start) - 1).min(end)).await {
-                Ok(r) => Some(r),
+            match fetch_waiting(&http, &reg, &token, &src, start, (start + piece(start) - 1).min(end)).await {
+                Ok((r, _)) => Some(r),
                 Err(code) => {
                     let reason = if code == 403 { "Forbidden" } else { "Bad Gateway" };
                     let code = if code == 403 { 403 } else { 502 };
@@ -316,8 +345,9 @@ async fn serve(sock: TcpStream, reg: Arc<Mutex<Registry>>, http: reqwest::Client
             // The upstream address may have been replaced while this answer was being sent
             // (a preview swapped for the full stream): each piece uses the current one.
             let now = reg.lock().sources.get(&token).cloned().unwrap_or_else(|| src.clone());
-            resp = fetch(&http, &now, pos, (pos + piece(pos) - 1).min(end))
+            resp = fetch_waiting(&http, &reg, &token, &now, pos, (pos + piece(pos) - 1).min(end))
                 .await
+                .map(|(r, _)| r)
                 .map_err(|c| std::io::Error::other(format!("upstream {c}")))?;
         }
         w.flush().await?;

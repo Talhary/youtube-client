@@ -75,6 +75,10 @@ pub enum Command {
     /// Save an album or playlist to the library, or take it out.
     MusicSave { req: ReqId, list: String, on: bool },
     Suggest { req: ReqId, query: String },
+    /// TVs on the local network that can play YouTube (DIAL), answered as an action.
+    TvFind { req: ReqId },
+    /// Ask a TV found by `TvFind` to play a video.
+    TvPlay { req: ReqId, app_url: String, video: String, at: u32 },
     More { req: ReqId, cursor: Cursor },
     DropCursor(Cursor),
     Channel { req: ReqId, id: String },
@@ -165,6 +169,12 @@ pub struct PlaybackInfo {
     pub valid_until: i64,
     /// "yt-dlp" or the rustypipe client that resolved the streams.
     pub client: String,
+    /// Dubbed sound tracks (the original first); empty for one track.
+    #[serde(default)]
+    pub audio_tracks: Vec<crate::streams::AudioTrack>,
+    /// Loudness-levelled ("stable volume") AAC sound.
+    #[serde(default)]
+    pub audio_drc: Option<StreamChoice>,
 }
 
 impl PlaybackInfo {
@@ -1256,6 +1266,10 @@ async fn handle(st: Arc<State>, cmd: Command) {
                 });
             }
         }
+        Command::TvFind { req } => emit(Event::Action { req, result: crate::dial::discover(&st.http).await }),
+        Command::TvPlay { req, app_url, video, at } => {
+            emit(Event::Action { req, result: crate::dial::launch(&st.http, &app_url, &video, at).await })
+        }
         Command::MusicBrowse { req, id, params } => {
             let cookie = session_cookie(&st);
             let result = crate::music::browse(&st.http, cookie.as_deref(), &id, params.as_deref())
@@ -1830,6 +1844,56 @@ async fn install_ffmpeg(_st: &State) {}
 /// Playback start: reuse a cached or in-progress yt-dlp result for this video, otherwise
 /// resolve now. `after_403` forces fresh URLs.
 async fn resolve_for_playback(st: &Arc<State>, req: ReqId, id: String, px: u32, after_403: bool) {
+    // With the yt-parser library (the phone's resolver, also built for the desktop): the
+    // prefetch cache, then the quick answer, checked for preview-only URLs while it plays.
+    if crate::ytp::has_library() {
+        let cookie = session_cookie(st);
+        let ready = (!after_403)
+            .then(|| {
+                st.stream_cache
+                    .lock()
+                    .get(&id)
+                    .filter(|r| r.valid_until - time::OffsetDateTime::now_utc().unix_timestamp() > 600)
+                    .cloned()
+            })
+            .flatten();
+        if let Some(r) = ready {
+            tracing::info!("playback for {id} from the prefetch cache ({})", r.source);
+            st.sink.emit(Event::Playback { req, result: Ok(playback_info(st, &id, px, r)) });
+            return;
+        }
+        let fast = if after_403 {
+            st.ytp.resolve(&id, cookie.as_deref()).await
+        } else {
+            st.ytp.resolve_fast(&id, cookie.as_deref()).await
+        };
+        let quick = match &fast {
+            Ok(r) if !after_403 => Some(r.source.clone()),
+            _ => None,
+        };
+        match fast {
+            Ok(r) => st.sink.emit(Event::Playback { req, result: Ok(playback_info(st, &id, px, r)) }),
+            Err(e) => {
+                st.sink.emit(Event::Playback { req, result: Err(e) });
+                return;
+            }
+        }
+        // As on the phone: the quick answer skipped the check for preview-only URLs. It runs
+        // now, while the video starts; if the full answer comes from another path, the proxy
+        // keeps the player's local addresses and fetches from the full streams instead.
+        if let Some(quick) = quick {
+            match st.ytp.resolve(&id, cookie.as_deref()).await {
+                Ok(full) if full.source != quick => {
+                    tracing::info!("streams for {id} were a preview ({quick}); switching to {}", full.source);
+                    let info = playback_info(st, &id, px, full);
+                    st.sink.emit(Event::PlaybackUpgrade { video_id: id, info });
+                }
+                Ok(_) => {}
+                Err(e) => tracing::info!("full streams for {id}: {e}"),
+            }
+        }
+        return;
+    }
     let result = st
         .resolver
         .full(&id, after_403)
@@ -1840,7 +1904,8 @@ async fn resolve_for_playback(st: &Arc<State>, req: ReqId, id: String, px: u32, 
 
 /// Route streams through the local server, build the quality list and pick a start quality.
 fn playback_info(st: &State, id: &str, px: u32, mut r: ResolvedStreams) -> PlaybackInfo {
-    proxy_streams(st, &format!("{id}:{}", r.source), &mut r);
+    let group = if crate::ytp::has_library() { id.to_string() } else { format!("{id}:{}", r.source) };
+    proxy_streams(st, &group, &mut r);
     let settings = st.settings.lock().clone();
     let caps = streams::apply_codec_pref(*st.caps.lock(), settings.codec);
     let qualities = streams::qualities_from(&r.video, &caps);
@@ -1871,6 +1936,8 @@ fn playback_info(st: &State, id: &str, px: u32, mut r: ResolvedStreams) -> Playb
         hls: r.hls,
         valid_until: r.valid_until,
         client: r.source,
+        audio_tracks: r.audio_tracks,
+        audio_drc: r.audio_drc,
     }
 }
 

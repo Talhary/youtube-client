@@ -13,11 +13,12 @@ use streampipe_core::streams::HwCaps;
 use streampipe_core::update::UpdateInfo;
 use streampipe_core::{Command, CoreHandle, Event, PlaybackInfo, Status};
 
+use crate::extra::{ActionFn, ChannelTab, Chat, Comments, Dialog, Extras, Sleep, WatchTab, apply_audio};
 use crate::{FileDialog, FormFactor, LoadRequest, Platform, Player, PlayerEvent, motion, theme};
 
 /// How many videos at the top of a freshly loaded list are prepared in the background.
 /// Zero: pre-loading follows the user (hover, "Up next") to keep request volume low.
-const PRELOAD_FIRST: usize = 0;
+const PRELOAD_FIRST: usize = 4;
 
 /// A paged list of items with its in-flight requests.
 #[derive(Default)]
@@ -56,7 +57,7 @@ pub(crate) enum LibraryTab {
     Channels,
 }
 
-/// A page pushed on top of a tab (channel or playlist).
+/// A page pushed on top of a tab.
 pub(crate) enum Page {
     Channel {
         id: String,
@@ -64,7 +65,15 @@ pub(crate) enum Page {
         header: Option<ChannelPage>,
         videos: List,
         error: Option<String>,
+        tab: ChannelTab,
+        /// The list of the tab on screen (other than Videos).
+        tab_list: List,
+        about: Option<serde_json::Value>,
     },
+    Notifications {
+        list: List,
+    },
+    Music(crate::music::MusicView),
     Playlist {
         id: String,
         req: ReqId,
@@ -72,6 +81,37 @@ pub(crate) enum Page {
         videos: List,
         error: Option<String>,
     },
+}
+
+impl Page {
+    /// Every list on the page.
+    pub(crate) fn lists(&mut self) -> Vec<&mut List> {
+        match self {
+            Page::Channel { videos, tab_list, .. } => vec![videos, tab_list],
+            Page::Playlist { videos, .. } => vec![videos],
+            Page::Notifications { list } => vec![list],
+            Page::Music(_) => vec![],
+        }
+    }
+
+    /// The list on screen.
+    pub(crate) fn shown(&mut self) -> Option<&mut List> {
+        match self {
+            Page::Channel { videos, tab: ChannelTab::Videos, .. } => Some(videos),
+            Page::Channel { tab_list, .. } => Some(tab_list),
+            Page::Playlist { videos, .. } => Some(videos),
+            Page::Notifications { list } => Some(list),
+            Page::Music(_) => None,
+        }
+    }
+}
+
+/// A video waiting in the queue.
+#[derive(Clone)]
+pub(crate) struct QueueItem {
+    pub card: VideoCard,
+    /// A YouTube Music song (plays as sound with its album art).
+    pub music: bool,
 }
 
 pub(crate) struct NowPlaying {
@@ -96,6 +136,28 @@ pub(crate) struct NowPlaying {
     pub requested_at: Instant,
     /// Formats YouTube refused for this video (by itag); never offered again.
     pub refused: std::collections::HashSet<u32>,
+    /// A YouTube Music song.
+    pub music: bool,
+    pub extras: Option<Extras>,
+    /// The caption track shown, and its lines.
+    pub caption: Option<usize>,
+    pub cues: Vec<crate::extra::Cue>,
+    pub chat: Chat,
+    pub comments: Comments,
+    /// "like", "dislike" or "none".
+    pub rating: Option<String>,
+    /// The chosen dubbed sound track.
+    pub audio_track: Option<usize>,
+    /// The streams' own sound (before a dubbed or levelled track replaced it).
+    pub audio_orig: (Option<streampipe_core::streams::StreamChoice>, Option<streampipe_core::streams::StreamChoice>),
+    /// Where playback was last reported to the account's history.
+    pub reported_at: Option<f64>,
+    pub saved_at: Instant,
+    /// YouTube Music: the song's lyrics and related pages, and what they hold.
+    pub lyrics_id: Option<String>,
+    pub related_id: Option<String>,
+    pub lyrics: Option<Result<String, String>>,
+    pub music_related: Option<crate::music::MusicView>,
 }
 
 pub(crate) enum Thumb {
@@ -176,6 +238,22 @@ pub struct App {
     pub(crate) video_px_height: u32,
     pub(crate) prefetched: std::collections::HashSet<String>,
     applied_scale: f32,
+
+    pub(crate) actions: HashMap<ReqId, ActionFn>,
+    pub(crate) store: crate::store::Store,
+    pub(crate) queue: Vec<QueueItem>,
+    pub(crate) home_chip: usize,
+    pub(crate) search_filter: streampipe_core::api::SearchOptions,
+    pub(crate) dialog: Option<Dialog>,
+    pub(crate) sleep: Option<Sleep>,
+    pub(crate) watch_tab: WatchTab,
+    /// The watch history's buttons: (kind, handle).
+    pub(crate) history_actions: Vec<(String, String)>,
+    /// Channel id -> its subscribe state (`{subscribed, bell, bell_now}`).
+    pub(crate) subs_state: HashMap<String, serde_json::Value>,
+    pub(crate) music: crate::music::MusicState,
+    /// The Audio only choice for videos (songs follow the Song/Video switch).
+    pub(crate) video_audio_only: bool,
 }
 
 impl App {
@@ -188,6 +266,7 @@ impl App {
     ) -> Self {
         let (files_tx, files_rx) = channel();
         let form = platform.form_factor();
+        let store = crate::store::Store::load(platform.data_dir());
         let mut app = Self {
             core,
             events,
@@ -229,7 +308,20 @@ impl App {
             video_px_height: 720,
             prefetched: std::collections::HashSet::new(),
             applied_scale: 1.0,
+            actions: HashMap::new(),
+            store,
+            queue: Vec::new(),
+            home_chip: 0,
+            search_filter: Default::default(),
+            dialog: None,
+            sleep: None,
+            watch_tab: WatchTab::UpNext,
+            history_actions: Vec::new(),
+            subs_state: HashMap::new(),
+            music: Default::default(),
+            video_audio_only: false,
         };
+        app.player.set_loop(app.store.saved.loop_video);
         let req = app.req();
         app.home.loading = Some(req);
         app.core.send(Command::Home { req });
@@ -254,6 +346,13 @@ impl App {
         }
         self.tab = tab;
         self.drop_stack();
+        if self.store.saved.music_mode {
+            if tab == Tab::Search {
+                self.focus_search = true;
+            }
+            self.music_tab_shown();
+            return;
+        }
         let signed_in = self.auth.method.is_some();
         match tab {
             Tab::Subscriptions if signed_in && !self.feed.loaded_once && self.feed.loading.is_none() => {
@@ -282,12 +381,11 @@ impl App {
     }
 
     fn drop_stack(&mut self) {
-        for p in self.stack.drain(..) {
-            let l = match p {
-                Page::Channel { videos, .. } | Page::Playlist { videos, .. } => videos,
-            };
-            if let Some(c) = l.next {
-                self.core.send(Command::DropCursor(c));
+        for mut p in std::mem::take(&mut self.stack) {
+            for l in p.lists() {
+                if let Some(c) = l.next.take() {
+                    self.core.send(Command::DropCursor(c));
+                }
             }
         }
     }
@@ -300,9 +398,11 @@ impl App {
             }
         }
         match self.stack.pop() {
-            Some(Page::Channel { videos, .. } | Page::Playlist { videos, .. }) => {
-                if let Some(c) = videos.next {
-                    self.core.send(Command::DropCursor(c));
+            Some(mut p) => {
+                for l in p.lists() {
+                    if let Some(c) = l.next.take() {
+                        self.core.send(Command::DropCursor(c));
+                    }
                 }
                 true
             }
@@ -317,6 +417,9 @@ impl App {
     pub(crate) fn open_channel(&mut self, id: String) {
         let req = self.req();
         self.core.send(Command::Channel { req, id: id.clone() });
+        if self.signed_in() {
+            self.load_subscription(id.clone());
+        }
         self.stack.push(Page::Channel {
             id,
             req,
@@ -326,6 +429,9 @@ impl App {
                 ..Default::default()
             },
             error: None,
+            tab: ChannelTab::Videos,
+            tab_list: List::default(),
+            about: None,
         });
         if let Some(n) = &mut self.now {
             n.expanded = false;
@@ -391,7 +497,14 @@ impl App {
         self.search_submitted = q.clone();
         self.suggestions.clear();
         self.suggest_due = None;
-        self.core.send(Command::Search { req, query: q, filter: Default::default() });
+        self.store.searched(&q);
+        if self.store.saved.music_mode {
+            self.search.loading = None;
+            self.music_search(q);
+            return;
+        }
+        let filter = self.search_filter.clone();
+        self.core.send(Command::Search { req, query: q, filter });
     }
 
     pub(crate) fn search_text_changed(&mut self) {
@@ -425,7 +538,7 @@ impl App {
             ListRef::Home => Command::Home { req },
             ListRef::Search => Command::Search {
                 req,
-                filter: Default::default(),
+                filter: self.search_filter.clone(),
                 query: self.search_submitted.clone(),
             },
             ListRef::Feed => Command::Feed { req },
@@ -443,6 +556,8 @@ impl App {
                 match self.stack.pop() {
                     Some(Page::Channel { id, .. }) => self.open_channel(id),
                     Some(Page::Playlist { id, .. }) => self.open_playlist(id),
+                    Some(Page::Notifications { .. }) => self.open_notifications(),
+                    Some(Page::Music(v)) => self.open_music_page(v.id, v.params, v.title),
                     None => {}
                 }
                 return;
@@ -466,15 +581,35 @@ impl App {
             ListRef::Saved => &mut self.saved,
             ListRef::Subs => &mut self.subs,
             ListRef::Related => &mut self.now.as_mut()?.related,
-            ListRef::Stack => match self.stack.last_mut()? {
-                Page::Channel { videos, .. } | Page::Playlist { videos, .. } => videos,
-            },
+            ListRef::Stack => self.stack.last_mut()?.shown()?,
         })
     }
 
     // ---------------------------------------------------------------- playback
 
     pub(crate) fn play(&mut self, card: VideoCard) {
+        self.play_card(card, false);
+    }
+
+    /// Start a video, or a YouTube Music song (`music`).
+    pub(crate) fn play_card(&mut self, card: VideoCard, music: bool) {
+        if let Some(n) = &self.now {
+            let st = self.player.state();
+            if st.duration_s > 0.0 && n.info.as_ref().is_some_and(|i| i.hls.is_none()) {
+                self.store.played(&n.card.id, st.position_s, st.duration_s);
+            }
+        }
+        // Songs follow the Song/Video switch; videos the user's Audio only choice.
+        self.audio_only = if music { !self.store.saved.music_video } else { self.video_audio_only };
+        // Keep the tab under the player where it still applies (Comments, Lyrics, Related).
+        let keep = if music {
+            matches!(self.watch_tab, WatchTab::Lyrics | WatchTab::Related)
+        } else {
+            self.watch_tab == WatchTab::Comments
+        };
+        if !keep {
+            self.watch_tab = WatchTab::UpNext;
+        }
         if let Some(old) = self.now.take() {
             if let Some(c) = old.related.next {
                 self.core.send(Command::DropCursor(c));
@@ -512,7 +647,31 @@ impl App {
             prefetched_next: false,
             requested_at: Instant::now(),
             refused: Default::default(),
+            music,
+            extras: None,
+            caption: None,
+            cues: Vec::new(),
+            chat: Chat::default(),
+            comments: Comments::default(),
+            rating: None,
+            audio_track: None,
+            audio_orig: (None, None),
+            reported_at: None,
+            saved_at: Instant::now(),
+            lyrics_id: None,
+            related_id: None,
+            lyrics: None,
+            music_related: None,
         });
+        let id = self.now.as_ref().map(|n| n.card.id.clone()).unwrap_or_default();
+        let resume = if music { None } else { self.store.resume_at(&id) };
+        if let Some(n) = &mut self.now {
+            n.resume_at = resume;
+        }
+        self.load_extras(id);
+        if self.watch_tab == WatchTab::Comments {
+            self.load_comments();
+        }
     }
 
     fn play_id_refresh(&mut self, id: String) {
@@ -578,7 +737,18 @@ impl App {
     /// Resolve a video in the background so it starts quickly if opened.
     pub(crate) fn prefetch(&mut self, id: &str) {
         if self.settings.as_ref().is_some_and(|s| s.preload) && self.prefetched.insert(id.to_string()) {
-            self.core.send(Command::Prefetch { id: id.to_string() });
+            self.core.send(Command::PrefetchStreams { ids: vec![id.to_string()] });
+        }
+    }
+
+    /// Resolve several videos ahead (the first rows of a list that just loaded).
+    pub(crate) fn prefetch_many(&mut self, ids: Vec<String>) {
+        if !self.settings.as_ref().is_some_and(|s| s.preload) {
+            return;
+        }
+        let ids: Vec<String> = ids.into_iter().filter(|id| self.prefetched.insert(id.clone())).collect();
+        if !ids.is_empty() {
+            self.core.send(Command::PrefetchStreams { ids });
         }
     }
 
@@ -641,9 +811,7 @@ impl App {
             lists.push(&mut n.related);
         }
         for p in &mut self.stack {
-            match p {
-                Page::Channel { videos, .. } | Page::Playlist { videos, .. } => lists.push(videos),
-            }
+            lists.extend(p.lists());
         }
         let mut first_videos: Vec<String> = Vec::new();
         for l in lists {
@@ -667,9 +835,7 @@ impl App {
                     }
                     Err(e) => l.error = Some(e),
                 }
-                for id in first_videos {
-                    self.prefetch(&id);
-                }
+                self.prefetch_many(first_videos);
                 return;
             }
             if l.more == Some(req) {
@@ -763,6 +929,13 @@ impl App {
                             Ok(mut d) => {
                                 n.related.items = std::mem::take(&mut d.related.items);
                                 n.related.next = d.related.next.take();
+                                if n.card.title.is_empty() {
+                                    n.card.title = d.video.title.clone();
+                                }
+                                if n.card.channel_id.is_none() {
+                                    n.card.channel_id = d.video.channel_id.clone();
+                                    n.card.channel_name = d.video.channel_name.clone();
+                                }
                                 n.details = Some(d);
                                 n.prefetched_next = true;
                                 let next: Vec<String> = n
@@ -773,11 +946,11 @@ impl App {
                                         Item::Video(v) if !v.is_live => Some(v.id.clone()),
                                         _ => None,
                                     })
-                                    .take(1)
+                                    .take(2)
                                     .collect();
-                                for id in next {
-                                    self.prefetch(&id);
-                                }
+                                let queued = self.queue.first().map(|q| q.card.id.clone());
+                                self.prefetch_many(queued.into_iter().chain(next).collect());
+                                self.load_account_state();
                             }
                             Err(e) => n.related.error = Some(e),
                         }
@@ -786,11 +959,15 @@ impl App {
             }
             Event::Playback { req, result } => {
                 let audio_only = self.audio_only;
+                let stable = self.store.saved.stable_volume;
                 if let Some(n) = &mut self.now {
                     if n.resolve_req == Some(req) {
                         n.resolve_req = None;
                         match result {
-                            Ok(info) => {
+                            Ok(mut info) => {
+                                n.audio_orig = (info.audio_aac.clone(), info.audio_opus.clone());
+                                let level = apply_audio(&mut info, &n.audio_orig, n.audio_track, stable);
+                                self.player.set_leveller(level);
                                 // Keep the user's manual quality across re-resolves.
                                 let keep = n
                                     .quality
@@ -817,12 +994,16 @@ impl App {
                     }
                 }
             }
-            Event::PlaybackUpgrade { video_id, info } => {
+            Event::PlaybackUpgrade { video_id, mut info } => {
                 let audio_only = self.audio_only;
+                let stable = self.store.saved.stable_volume;
                 let Some(n) = &mut self.now else { return };
                 if n.card.id != video_id {
                     return;
                 }
+                n.audio_orig = (info.audio_aac.clone(), info.audio_opus.clone());
+                let level = apply_audio(&mut info, &n.audio_orig, n.audio_track, stable);
+                self.player.set_leveller(level);
                 let keep = n
                     .quality
                     .and_then(|i| n.info.as_ref()?.qualities.get(i))
@@ -830,8 +1011,23 @@ impl App {
                 let mapped = keep.and_then(|(h, f)| {
                     info.qualities.iter().position(|q| q.height == h && q.fps == f)
                 });
-                if n.awaiting_upgrade.is_some() || n.error.is_some() || n.info.is_none() {
-                    // The quick source failed: continue on yt-dlp's streams where we were.
+                // The direct resolver's quick URLs were a preview (they stop after about a
+                // minute). As on the phone: the proxy keeps the local addresses and fetches from
+                // the full streams, so the player only restarts if its addresses changed.
+                let preview = n.info.as_ref().is_some_and(|i| i.client.starts_with("ytp-") || i.client.starts_with("direct-"));
+                let playing = n.error.is_none() && n.awaiting_upgrade.is_none() && n.info.is_some();
+                if preview && playing {
+                    let pos = self.player.state().position_s;
+                    let before = n.info.as_ref().map(|i| LoadRequest::from_info(i, n.quality, audio_only, pos));
+                    n.quality = mapped.or(info.selected);
+                    let after = LoadRequest::from_info(&info, n.quality, audio_only, pos);
+                    let same = before.is_some_and(|b| b.video_url == after.video_url && b.audio_url == after.audio_url);
+                    n.info = Some(info);
+                    if !same {
+                        self.player.load(after);
+                    }
+                } else if n.awaiting_upgrade.is_some() || n.error.is_some() || n.info.is_none() {
+                    // Continue on the new streams where playback was.
                     n.quality = mapped.or(info.selected);
                     let start = n.resume_at.take().unwrap_or(0.0);
                     let load = LoadRequest::from_info(&info, n.quality, audio_only, start);
@@ -876,6 +1072,7 @@ impl App {
                     if was.is_none() {
                         self.toast("Signed in");
                         self.reload_home();
+                        self.home_chip = 0;
                         self.feed = List::default();
                         self.history = List::default();
                         self.saved = List::default();
@@ -952,6 +1149,7 @@ impl App {
             Event::Settings(s) => {
                 if self.settings.is_none() {
                     self.audio_only = s.audio_only;
+                    self.video_audio_only = s.audio_only;
                 }
                 motion::set_reduced(
                     s.reduced_motion
@@ -972,11 +1170,10 @@ impl App {
             Event::Remote(r) => self.remote = r,
             Event::UpdateAvailable(u) => self.update = Some(u),
             Event::Toast(t) => self.toast(t),
-            // Comments are shown by the Android app only.
-            Event::Comments { .. } => {}
+            Event::Comments { req, result } => self.on_comments(req, result),
             // Direct streams are used by the Android app only.
             Event::Streams { .. } => {}
-            Event::Action { .. } => {}
+            Event::Action { req, result } => self.on_action(req, result),
             Event::StreamsUpdate { .. } => {}
         }
     }
@@ -985,6 +1182,26 @@ impl App {
         for e in self.player.poll_events() {
             match e {
                 PlayerEvent::Ended => {
+                    if let Some(n) = &self.now {
+                        // Finished: start from the top next time.
+                        self.store.saved.resume.remove(&n.card.id);
+                        self.store.touch();
+                    }
+                    if matches!(self.sleep, Some(Sleep::EndOfVideo)) {
+                        self.sleep = None;
+                        self.toast("Sleep timer: stopped at the end of the video");
+                        self.platform.background_playback(false);
+                        continue;
+                    }
+                    if !self.queue.is_empty() {
+                        let q = self.queue.remove(0);
+                        self.play_card(q.card, q.music);
+                        continue;
+                    }
+                    if self.now.as_ref().is_some_and(|n| n.music) {
+                        self.platform.background_playback(false);
+                        continue;
+                    }
                     let autoplay = self.settings.as_ref().is_some_and(|s| s.autoplay);
                     let next = self.now.as_ref().and_then(|n| {
                         n.related.items.iter().find_map(|i| match i {
@@ -1129,8 +1346,14 @@ impl App {
                 self.player.set_volume(v);
             }
             if input(Key::A) {
-                self.audio_only = !self.audio_only;
-                self.reload_stream();
+                self.toggle_audio_only();
+            }
+            if input(Key::C) {
+                self.cycle_captions();
+            }
+            if input(Key::N) && !self.queue.is_empty() {
+                let q = self.queue.remove(0);
+                self.play_card(q.card, q.music);
             }
         }
         if input(Key::T) {
@@ -1237,7 +1460,11 @@ impl App {
                 self.suggest_due = None;
                 let req = self.req();
                 self.suggest_req = Some(req);
-                self.core.send(Command::Suggest { req, query: q });
+                if self.store.saved.music_mode {
+                    self.core.send(Command::MusicSuggest { req, query: q });
+                } else {
+                    self.core.send(Command::Suggest { req, query: q });
+                }
             } else {
                 ctx.request_repaint_after(*due - now);
             }
@@ -1283,6 +1510,8 @@ impl App {
                 self.core.send(Command::Throughput(bps));
             }
         }
+
+        self.tick(ctx);
 
         self.toasts
             .retain(|(_, t)| t.elapsed() < Duration::from_secs(4));

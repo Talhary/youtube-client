@@ -28,6 +28,8 @@ fn main() {
         root.join("third_party/botguard/bin/rustypipe-botguard.exe"),
         root.join("third_party/ffmpeg/ffmpeg.exe"),
         root.join("third_party/deno/deno.exe"),
+        // The yt-parser resolver (build: third_party/yt-parser-src, go build -tags ytplib -buildmode=c-shared).
+        root.join("third_party/ytp/ytp.dll"),
     ];
     for src in copies {
         copy_if_newer(&src, &bin_dir);

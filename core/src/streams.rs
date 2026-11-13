@@ -319,7 +319,7 @@ pub struct ResolvedStreams {
 }
 
 /// One language of a video with dubbed sound.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
 pub struct AudioTrack {
     /// As YouTube names it, e.g. "English (United States) original".
     pub name: String,

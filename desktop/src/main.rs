@@ -3,6 +3,7 @@
 mod mpv;
 mod platform;
 mod signin;
+mod ytplib;
 
 use std::sync::Arc;
 
@@ -66,6 +67,10 @@ fn main() -> eframe::Result {
         eprintln!("could not create app folders: {e}");
     }
     let key = streampipe_core::secure::desktop_key(&paths.data);
+    match ytplib::YtParser::load(&paths.cache) {
+        Ok(lib) => streampipe_core::ytp::use_library(Box::new(move |id, cookie, fast| lib.resolve(id, cookie, fast))),
+        Err(e) => eprintln!("yt-parser library: {e}; using the other resolvers"),
+    }
     let ffmpeg = Arc::new(FfmpegMuxer::new(find_ffmpeg(&paths.data)));
     let caps_file = paths.config.join("hwcaps.json");
     // Start optimistic; the player downgrades a codec the first time it decodes in software.
@@ -120,6 +125,7 @@ fn main() -> eframe::Result {
                 player,
                 Box::new(platform::Desktop {
                     signin_profile: paths.cache.join("signin-webview"),
+                    config_dir: paths.config.clone(),
                 }),
                 caps,
             );

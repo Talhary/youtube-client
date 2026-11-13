@@ -8,6 +8,7 @@ use streampipe_core::download::{DownloadKind, JobStatus};
 use streampipe_core::model::{Item, fmt_count};
 
 use crate::app::{App, LibraryTab, ListRef, Page, Tab};
+use crate::extra::ChannelTab;
 use crate::theme::*;
 use crate::widgets::{self, CARD_GAP, CARD_MIN_W, CARD_TEXT_H, Icon, ROW_H, fmt_bytes, fmt_time};
 use crate::{FileDialog, FormFactor, motion};
@@ -30,6 +31,7 @@ pub fn root(app: &mut App, ui: &mut Ui) {
         FormFactor::Phone => phone(app, ui),
     }
     auth_dialog(app, &ctx);
+    crate::watch::dialogs(app, &ctx);
     toasts(app, &ctx);
 }
 
@@ -66,7 +68,7 @@ fn desktop(app: &mut App, ui: &mut Ui) {
         .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(20, 6)))
         .show(ui, |ui| {
             if playing {
-                player_pane(app, ui);
+                crate::watch::player_pane(app, ui);
             } else {
                 browse(app, ui);
             }
@@ -93,7 +95,7 @@ fn phone(app: &mut App, ui: &mut Ui) {
         .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(8, 4)))
         .show(ui, |ui| {
             if expanded {
-                player_pane(app, ui);
+                crate::watch::player_pane(app, ui);
             } else {
                 browse(app, ui);
             }
@@ -105,18 +107,29 @@ fn sidebar(app: &mut App, ui: &mut Ui, compact: bool) {
         if compact {
             ui.add_space((ui.available_width() - 30.0) / 2.0);
         }
-        widgets::logo(ui, 30.0);
+        if widgets::logo(ui, 30.0).on_hover_text("Switch between YouTube and YouTube Music").clicked() {
+            let on = !app.store.saved.music_mode;
+            app.set_music_mode(on);
+        }
         if !compact {
             ui.add_space(4.0);
-            ui.label(RichText::new("StreamPipe").font(heading_font(18.0)));
+            let name = if app.store.saved.music_mode { "Music" } else { "StreamPipe" };
+            ui.label(RichText::new(name).font(heading_font(18.0)));
         }
     });
-    ui.add_space(22.0);
+    ui.add_space(10.0);
+    let music = app.store.saved.music_mode;
+    if !compact {
+        if let Some(i) = widgets::pills(ui, &["YouTube", "Music"], usize::from(music)) {
+            app.set_music_mode(i == 1);
+        }
+    }
+    ui.add_space(12.0);
     let downloading = app.downloads.values().filter(|d| d.status.is_active()).count();
     let items = [
         (Tab::Home, Icon::Home, "Home", None),
         (Tab::Search, Icon::Search, "Search", None),
-        (Tab::Subscriptions, Icon::Subscriptions, "Subscriptions", None),
+        (Tab::Subscriptions, Icon::Subscriptions, if music { "Explore" } else { "Subscriptions" }, None),
         (Tab::Library, Icon::Library, "Library", None),
         (Tab::Downloads, Icon::Download, "Downloads", Some(downloading)),
     ];
@@ -191,9 +204,16 @@ fn top_bar(app: &mut App, ui: &mut Ui) {
         if app.theater && app.form == FormFactor::Desktop && widgets::ghost(ui, "Exit theater").clicked() {
             app.theater = false;
         }
-        let right = if phone { 90.0 } else { 0.0 };
+        let right = if phone { 90.0 } else { 60.0 };
         let w = (ui.available_width() - right).min(620.0);
         search_box(app, ui, w);
+        if !phone && app.signed_in() && !app.store.saved.music_mode {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(egui::Button::new(RichText::new("🔔").size(18.0)).frame(false)).on_hover_text("Notifications").clicked() {
+                    app.open_notifications();
+                }
+            });
+        }
         if phone {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if widgets::icon_button(ui, Icon::Settings, "Settings").clicked() {
@@ -222,7 +242,7 @@ fn search_box(app: &mut App, ui: &mut Ui, width: f32) {
                     egui::TextEdit::singleline(&mut app.search_text)
                         .id(id)
                         .frame(egui::Frame::NONE)
-                        .hint_text("Search videos, channels and playlists   /")
+                        .hint_text(if app.store.saved.music_mode { "Search songs, albums and artists   /" } else { "Search videos, channels and playlists   /" })
                         .desired_width(ui.available_width()),
                 )
             })
@@ -239,21 +259,36 @@ fn search_box(app: &mut App, ui: &mut Ui, width: f32) {
     if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
         app.submit_search();
     }
-    if resp.has_focus() && !app.suggestions.is_empty() {
+    // Suggestions while typing; the search history when the box is empty.
+    let history = app.search_text.trim().is_empty() && !app.store.saved.search_history_off;
+    let shown: Vec<String> = if history { app.store.saved.searches.iter().take(10).cloned().collect() } else { app.suggestions.clone() };
+    if resp.has_focus() && !shown.is_empty() {
         let mut pick = None;
+        let mut forget = None;
         egui::Popup::from_response(&resp)
             .open(true)
             .width(width)
             .show(|ui| {
-                for s in &app.suggestions {
-                    if ui
-                        .add(egui::Button::new(RichText::new(s)).frame(false))
-                        .clicked()
-                    {
-                        pick = Some(s.clone());
-                    }
+                for s in &shown {
+                    ui.horizontal(|ui| {
+                        let icon = if history { "🕘  " } else { "🔍  " };
+                        if ui.add(egui::Button::new(RichText::new(format!("{icon}{s}"))).frame(false)).clicked() {
+                            pick = Some(s.clone());
+                        }
+                        if history {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("✖").on_hover_text("Remove from history").clicked() {
+                                    forget = Some(s.clone());
+                                }
+                            });
+                        }
+                    });
                 }
             });
+        if let Some(f) = forget {
+            app.store.saved.searches.retain(|x| *x != f);
+            app.store.touch();
+        }
         if let Some(s) = pick {
             app.search_text = s;
             app.submit_search();
@@ -391,9 +426,18 @@ fn browse(app: &mut App, ui: &mut Ui) {
         stack_page(app, ui);
         return;
     }
+    if app.store.saved.music_mode && matches!(app.tab, Tab::Home | Tab::Search | Tab::Subscriptions | Tab::Library) {
+        crate::music::browse(app, ui);
+        return;
+    }
     match app.tab {
         Tab::Home => {
             heading(ui, "Home", "");
+            let labels: Vec<&str> = crate::extra::EXPLORE.iter().map(|e| e.0).collect();
+            if let Some(i) = widgets::pills(ui, &labels, app.home_chip) {
+                app.explore(i);
+            }
+            ui.add_space(8.0);
             list_view(app, ui, ListRef::Home, "Nothing here yet", true);
         }
         Tab::Search => {
@@ -401,6 +445,11 @@ fn browse(app: &mut App, ui: &mut Ui) {
                 widgets::centered_message(ui, "Search YouTube", "Type in the search box above and press Enter.");
             } else {
                 heading(ui, &format!("Results for “{}”", app.search_submitted), "");
+                if search_filters(app, ui) {
+                    app.search_text = app.search_submitted.clone();
+                    app.submit_search();
+                }
+                ui.add_space(6.0);
                 list_view(app, ui, ListRef::Search, "No results", true);
             }
         }
@@ -420,9 +469,42 @@ fn browse(app: &mut App, ui: &mut Ui) {
             }
             let tabs = [LibraryTab::History, LibraryTab::Playlists, LibraryTab::Channels];
             let current = tabs.iter().position(|t| *t == app.library_tab).unwrap_or(0);
-            if let Some(i) = widgets::pills(ui, &["History", "Playlists", "Channels"], current) {
-                app.library_tab = tabs[i];
-                app.load_library();
+            ui.horizontal(|ui| {
+                if let Some(i) = widgets::pills(ui, &["History", "Playlists", "Channels"], current) {
+                    app.library_tab = tabs[i];
+                    app.load_library();
+                    if tabs[i] == LibraryTab::History {
+                        app.load_history_actions();
+                    }
+                }
+                ui.add_space(10.0);
+                if widgets::ghost(ui, "🕘 Watch later").clicked() {
+                    app.open_playlist("WL".into());
+                }
+                if widgets::ghost(ui, "👍 Liked videos").clicked() {
+                    app.open_playlist("LL".into());
+                }
+            });
+            if app.library_tab == LibraryTab::History {
+                if app.history_actions.is_empty() && !app.history.loaded_once {
+                    app.load_history_actions();
+                }
+                let actions = app.history_actions.clone();
+                if !actions.is_empty() {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        for (kind, token) in actions {
+                            let label = match kind.as_str() {
+                                "clear" => "Clear all watch history",
+                                "pause" => "Pause watch history",
+                                _ => "Turn on watch history",
+                            };
+                            if widgets::ghost(ui, label).clicked() {
+                                app.history_action(kind.clone(), token.clone());
+                            }
+                        }
+                    });
+                }
             }
             ui.add_space(8.0);
             let which = match app.library_tab {
@@ -463,6 +545,16 @@ fn sign_in_prompt(app: &mut App, ui: &mut Ui) {
 fn stack_page(app: &mut App, ui: &mut Ui) {
     let mut dl_playlist = None;
     match app.stack.last() {
+        Some(Page::Music(v)) => {
+            let key = v.key;
+            crate::music::stack_page(app, ui, key);
+            return;
+        }
+        Some(Page::Notifications { .. }) => {
+            heading(ui, "Notifications", "");
+            list_view(app, ui, ListRef::Stack, "No notifications", true);
+            return;
+        }
         Some(Page::Channel { header, error, .. }) => {
             if let Some(e) = error {
                 error_box(app, ui, e.clone(), ListRef::Stack);
@@ -471,21 +563,87 @@ fn stack_page(app: &mut App, ui: &mut Ui) {
             match header {
                 Some(c) => {
                     let avatar = c.channel.avatar.clone();
+                    let banner = c.banner.clone();
                     let name = c.channel.name.clone();
                     let subs = c.channel.subscribers;
+                    let cid = c.channel.id.clone();
+                    let mut line = Vec::new();
+                    if let Some(h) = &c.handle {
+                        line.push(h.clone());
+                    }
+                    if let Some(n) = subs {
+                        line.push(format!("{} subscribers", fmt_count(n)));
+                    }
+                    if let Some(n) = c.video_count {
+                        line.push(format!("{} videos", fmt_count(n)));
+                    }
+                    let verified = c.verified;
+                    if let Some(b) = banner {
+                        let w = ui.available_width();
+                        let (r, _) = ui.allocate_exact_size(vec2(w, (w / 6.2).min(150.0)), Sense::hover());
+                        widgets::thumb(app, ui, Some(&b), r, 12);
+                    }
                     ui.add_space(6.0);
+                    let sub = app.subs_state.get(&cid).cloned();
+                    let mut sub_click = None;
                     ui.horizontal(|ui| {
                         let (r, _) = ui.allocate_exact_size(vec2(72.0, 72.0), Sense::hover());
                         widgets::thumb(app, ui, avatar.as_deref(), r, 255);
                         ui.add_space(6.0);
                         ui.vertical(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new(&name).font(heading_font(24.0)));
-                            if let Some(n) = subs {
-                                ui.label(RichText::new(format!("{} subscribers", fmt_count(n))).color(TEXT_DIM));
-                            }
+                            ui.add_space(4.0);
+                            let title = if verified { format!("{name}  ✔") } else { name.clone() };
+                            ui.label(RichText::new(title).font(heading_font(24.0)));
+                            ui.label(RichText::new(line.join("  ·  ")).color(TEXT_DIM));
+                            ui.add_space(4.0);
+                            let on = sub.as_ref().and_then(|v| v.get("subscribed")).and_then(|v| v.as_bool()).unwrap_or(false);
+                            ui.horizontal(|ui| {
+                                let resp = if on { widgets::ghost(ui, "Subscribed") } else { widgets::primary(ui, "Subscribe") };
+                                if resp.clicked() {
+                                    sub_click = Some((cid.clone(), !on, None));
+                                }
+                                if on {
+                                    let bells: Vec<(String, String)> = sub
+                                        .as_ref()
+                                        .and_then(|v| v.get("bell"))
+                                        .and_then(|v| v.as_array())
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|b| Some((b.get("label")?.as_str()?.to_string(), b.get("params")?.as_str()?.to_string())))
+                                        .collect();
+                                    if !bells.is_empty() {
+                                        ui.menu_button("🔔", |ui| {
+                                            for (label, params) in &bells {
+                                                if ui.button(label).clicked() {
+                                                    sub_click = Some((cid.clone(), true, Some((params.clone(), label.clone()))));
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            });
                         });
                     });
+                    match sub_click {
+                        Some((c, _, Some((params, label)))) => app.set_bell(c, params, label),
+                        Some((c, on, None)) => app.subscribe(c, on),
+                        None => {}
+                    }
+                    ui.add_space(8.0);
+                    let tab = match app.stack.last() {
+                        Some(Page::Channel { tab, .. }) => *tab,
+                        _ => ChannelTab::Videos,
+                    };
+                    let labels: Vec<&str> = ChannelTab::ALL.iter().map(|t| t.label()).collect();
+                    let current = ChannelTab::ALL.iter().position(|t| *t == tab).unwrap_or(0);
+                    if let Some(i) = widgets::pills(ui, &labels, current) {
+                        app.channel_tab(ChannelTab::ALL[i]);
+                    }
+                    if tab == ChannelTab::About {
+                        about(app, ui);
+                        return;
+                    }
                 }
                 None => {
                     ui.horizontal(|ui| {
@@ -658,7 +816,8 @@ fn list_view(app: &mut App, ui: &mut Ui, which: ListRef, empty: &str, keyboard: 
     let mut open: Option<Item> = None;
     let mut want_more = false;
     let mut retry = false;
-    let mut channel_click = None;
+    let channel_click: Option<String> = None;
+    let mut item_act = None;
     let mut prefetch = None;
     let mut sa = egui::ScrollArea::vertical()
         .id_salt(("list", which as u8))
@@ -722,16 +881,7 @@ fn list_view(app: &mut App, ui: &mut Ui, which: ListRef, empty: &str, keyboard: 
                 }
                 resp.context_menu(|ui| {
                     if let Item::Video(v) = &item {
-                        if let Some(c) = &v.channel_id {
-                            if ui.button("Go to channel").clicked() {
-                                channel_click = Some(c.clone());
-                                ui.close();
-                            }
-                        }
-                        if ui.button("Copy link").clicked() {
-                            ui.ctx().copy_text(format!("https://youtu.be/{}", v.id));
-                            ui.close();
-                        }
+                        crate::watch::video_menu(ui, v, which == ListRef::Home, &mut item_act);
                     }
                 });
             };
@@ -772,323 +922,11 @@ fn list_view(app: &mut App, ui: &mut Ui, which: ListRef, empty: &str, keyboard: 
     if let Some(c) = channel_click {
         app.open_channel(c);
     }
+    if let Some(a) = item_act {
+        app.run_item_act(a);
+    }
     if let Some(item) = open {
         app.open_item(&item);
-    }
-}
-
-// ------------------------------------------------------------------ player
-
-fn player_pane(app: &mut App, ui: &mut Ui) {
-    let phone = app.form == FormFactor::Phone;
-    if phone {
-        ui.horizontal(|ui| {
-            if ui.button("⌄").on_hover_text("Minimize").clicked() {
-                if let Some(n) = &mut app.now {
-                    n.expanded = false;
-                }
-            }
-        });
-    }
-    let st = app.player.state();
-    let avail = ui.available_size();
-    let mut w = avail.x;
-    let max_h = if app.theater { avail.y - 120.0 } else { avail.y * 0.62 };
-    let mut h = w * 9.0 / 16.0;
-    if h > max_h {
-        h = max_h.max(120.0);
-        w = h * 16.0 / 9.0;
-    }
-    ui.add_space(4.0);
-    let (outer, resp) = ui.allocate_exact_size(vec2(avail.x, h), Sense::click());
-    let rect = egui::Rect::from_center_size(outer.center(), vec2(w, h));
-    ui.painter().rect_filled(outer, CornerRadius::same(14), Color32::BLACK);
-    app.video_px_height = (h * ui.ctx().pixels_per_point()) as u32;
-
-    let (resolving, error, thumb, waited) = match &app.now {
-        Some(n) => (
-            n.resolve_req.is_some() && n.error.is_none(),
-            n.error.clone(),
-            n.card.thumbnail.clone(),
-            n.requested_at.elapsed().as_secs(),
-        ),
-        None => return,
-    };
-    if app.audio_only || resolving {
-        widgets::thumb(app, ui, thumb.as_deref(), rect, 14);
-        if app.audio_only && !resolving {
-            ui.painter().rect_filled(rect, CornerRadius::same(14), Color32::from_black_alpha(150));
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "♫  Audio only", heading_font(20.0), TEXT);
-        }
-    }
-    if !app.audio_only && !resolving {
-        app.player.show_video(ui, rect);
-    }
-    let preparing = format!("Preparing video…  {waited}s");
-    let overlay = if resolving {
-        // Repaint once a second so the timer moves.
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-        Some(preparing.as_str())
-    } else if st.buffering && !st.idle {
-        Some("Buffering…")
-    } else {
-        None
-    };
-    if let Some(text) = overlay {
-        let pill = egui::Rect::from_center_size(rect.center(), vec2(text.len() as f32 * 8.0 + 30.0, 34.0));
-        ui.painter().rect_filled(pill, CornerRadius::same(17), Color32::from_black_alpha(190));
-        ui.painter().text(pill.center(), egui::Align2::CENTER_CENTER, text, FontId::proportional(14.0), TEXT);
-    }
-    if let Some(e) = &error {
-        ui.painter().rect_filled(rect, CornerRadius::same(14), Color32::from_black_alpha(210));
-        ui.painter().text(rect.center() - vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, "Playback failed", heading_font(16.0), TEXT);
-        ui.painter().text(
-            rect.center() + vec2(0.0, 14.0),
-            egui::Align2::CENTER_CENTER,
-            truncate(e, 90),
-            FontId::proportional(12.0),
-            TEXT_DIM,
-        );
-    }
-    if resp.clicked() && !st.idle {
-        app.player.set_paused(!st.paused);
-    }
-    if resp.double_clicked() && !phone {
-        app.theater = !app.theater;
-    }
-
-    controls(app, ui, &st, error.is_some());
-    info_block(app, ui);
-    if !app.theater {
-        ui.add_space(6.0);
-        ui.label(RichText::new("Up next").font(heading_font(15.0)));
-        ui.add_space(2.0);
-        list_view(app, ui, ListRef::Related, "No related videos", false);
-    }
-}
-
-fn controls(app: &mut App, ui: &mut Ui, st: &crate::PlayerState, failed: bool) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        let playing = !(st.paused || st.idle);
-        if widgets::play_button(ui, playing, !st.idle).on_hover_text("Play/pause (Space)").clicked() {
-            app.player.set_paused(!st.paused);
-        }
-        ui.label(RichText::new(fmt_time(st.position_s)).monospace().small().color(TEXT_DIM));
-        let right_w = if app.form == FormFactor::Phone { 64.0 } else { 190.0 };
-        let bar_w = (ui.available_width() - right_w).max(60.0);
-        if let Some(p) = widgets::seek_bar(ui, st.position_s, st.duration_s, bar_w) {
-            let expired = app.now.as_ref().and_then(|n| n.info.as_ref()).is_some_and(|i| i.expired());
-            if expired {
-                app.reresolve(false);
-            }
-            app.player.seek(p);
-        }
-        ui.label(RichText::new(fmt_time(st.duration_s)).monospace().small().color(TEXT_DIM));
-        if app.form == FormFactor::Desktop {
-            let mut vol = st.volume;
-            ui.spacing_mut().slider_width = 90.0;
-            if ui
-                .add(egui::Slider::new(&mut vol, 0.0..=130.0).show_value(false).text("Vol"))
-                .on_hover_text("Volume (+/−)")
-                .changed()
-            {
-                app.player.set_volume(vol);
-                app.update_settings(|s| s.volume = vol);
-            }
-        }
-    });
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        if failed && widgets::primary(ui, "Retry").clicked() {
-            if let Some(n) = &mut app.now {
-                n.retried_403 = false;
-                n.error = None;
-                n.info = None;
-            }
-            app.reresolve(true);
-        }
-        // Quality.
-        let (labels, current, auto, source) = match app.now.as_ref().and_then(|n| n.info.as_ref().map(|i| (i, n.quality))) {
-            Some((info, q)) => (
-                info.qualities.iter().map(|q| format!("{}  {}", q.label, q.stream.codec.to_uppercase())).collect::<Vec<_>>(),
-                q,
-                info.selected,
-                info.client.clone(),
-            ),
-            None => (Vec::new(), None, None, String::new()),
-        };
-        let shown = current
-            .and_then(|i| labels.get(i).cloned())
-            .unwrap_or_else(|| "Quality".into());
-        let mut pick = None;
-        ui.add_enabled_ui(!labels.is_empty() && !app.audio_only, |ui| {
-            egui::ComboBox::from_id_salt("quality")
-                .selected_text(shown.clone())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for (i, l) in labels.iter().enumerate() {
-                        let mut text = l.clone();
-                        if Some(i) == auto {
-                            text.push_str("  · auto");
-                        }
-                        if ui.selectable_label(current == Some(i), text).clicked() {
-                            pick = Some(i);
-                        }
-                    }
-                    if !source.is_empty() {
-                        ui.separator();
-                        ui.label(RichText::new(format!("Source: {source}")).small().color(TEXT_DIM));
-                    }
-                })
-                .response
-                .on_hover_text("Quality");
-        });
-        if let Some(i) = pick {
-            if let Some(n) = &mut app.now {
-                n.quality = Some(i);
-            }
-            app.reload_stream();
-        }
-        // Speed.
-        let speed = app.settings.as_ref().map(|s| s.speed).unwrap_or(1.0);
-        let mut new_speed = None;
-        egui::ComboBox::from_id_salt("speed")
-            .selected_text(format!("{speed}×"))
-            .width(62.0)
-            .show_ui(ui, |ui| {
-                for s in SPEEDS {
-                    if ui.selectable_label((s - speed).abs() < 0.01, format!("{s}×")).clicked() {
-                        new_speed = Some(s);
-                    }
-                }
-            })
-            .response
-            .on_hover_text("Playback speed");
-        if let Some(s) = new_speed {
-            app.player.set_speed(s);
-            app.update_settings(|st| st.speed = s);
-        }
-        let mut ao = app.audio_only;
-        if ui.toggle_value(&mut ao, "Audio only").on_hover_text("Audio only (A)").changed() {
-            app.audio_only = ao;
-            app.reload_stream();
-        }
-        let desktop = app.platform.is_desktop();
-        let mut dl = None;
-        ui.menu_button("Download", |ui| {
-            if ui.button("Video (best quality)").clicked() {
-                dl = Some(DownloadKind::Video { max_height: None });
-            }
-            for h in [1080, 720, 480] {
-                if ui.button(format!("Video (up to {h}p)")).clicked() {
-                    dl = Some(DownloadKind::Video { max_height: Some(h) });
-                }
-            }
-            ui.separator();
-            if ui.button("Audio (M4A)").clicked() {
-                dl = Some(DownloadKind::Audio(AudioOut::M4a));
-            }
-            if ui.button("Audio (Opus)").clicked() {
-                dl = Some(DownloadKind::Audio(AudioOut::Opus));
-            }
-            if desktop && ui.button("Audio (MP3, re-encoded)").clicked() {
-                dl = Some(DownloadKind::Audio(AudioOut::Mp3));
-            }
-            if dl.is_some() {
-                ui.close();
-            }
-        });
-        if let Some(k) = dl {
-            app.download(k);
-        }
-        if app.form == FormFactor::Desktop {
-            let label = if app.theater { "Exit theater" } else { "Theater" };
-            if ui.button(label).on_hover_text("Toggle theater mode (T)").clicked() {
-                app.theater = !app.theater;
-            }
-            if ui.button("Full screen").on_hover_text("Full screen (F11)").clicked() {
-                let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
-            }
-        }
-    });
-}
-
-fn info_block(app: &mut App, ui: &mut Ui) {
-    let Some(n) = &app.now else { return };
-    let title = n
-        .details
-        .as_ref()
-        .map(|d| d.video.title.clone())
-        .or_else(|| n.info.as_ref().map(|i| i.title.clone()).filter(|t| !t.is_empty()))
-        .unwrap_or_else(|| n.card.title.clone());
-    let channel = n
-        .details
-        .as_ref()
-        .and_then(|d| d.video.channel_name.clone())
-        .or_else(|| n.card.channel_name.clone());
-    let channel_id = n
-        .details
-        .as_ref()
-        .and_then(|d| d.video.channel_id.clone())
-        .or_else(|| n.card.channel_id.clone());
-    let mut meta = Vec::new();
-    if let Some(d) = &n.details {
-        if let Some(v) = d.video.views {
-            meta.push(format!("{} views", fmt_count(v)));
-        }
-        if let Some(p) = &d.video.published {
-            meta.push(p.clone());
-        }
-        if let Some(l) = d.likes {
-            meta.push(format!("{} likes", fmt_count(l as u64)));
-        }
-    }
-    let description = n.details.as_ref().map(|d| d.description.clone());
-    let video_id = n.card.id.clone();
-
-    ui.add_space(10.0);
-    ui.label(RichText::new(title).font(heading_font(19.0)));
-    ui.add_space(2.0);
-    let mut go_channel = false;
-    ui.horizontal(|ui| {
-        if let Some(c) = &channel {
-            if ui.link(RichText::new(c).color(TEXT).font(FontId::new(14.0, semibold()))).clicked() {
-                go_channel = true;
-            }
-        }
-        if !meta.is_empty() {
-            ui.label(RichText::new(meta.join("  ·  ")).color(TEXT_DIM).small());
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.small_button("Open on YouTube ↗").clicked() {
-                app.platform.open_url(&format!("https://www.youtube.com/watch?v={video_id}"));
-            }
-            if ui.small_button("Copy link").clicked() {
-                ui.ctx().copy_text(format!("https://youtu.be/{video_id}"));
-                app.toast("Link copied");
-            }
-        });
-    });
-    if go_channel {
-        if let Some(id) = channel_id {
-            app.open_channel(id);
-        }
-    }
-    if let Some(d) = description.filter(|d| !d.is_empty()) {
-        ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new("Description").color(TEXT_DIM))
-            .id_salt(("desc", &video_id))
-            .default_open(false)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .id_salt("desc-scroll")
-                    .show(ui, |ui| {
-                        ui.label(RichText::new(d).small());
-                    });
-            });
     }
 }
 
@@ -1227,6 +1065,25 @@ fn settings(app: &mut App, ui: &mut Ui) {
         ui.set_max_width(820.0);
         heading(ui, "Settings", "Changes are saved automatically.");
 
+        widgets::card(ui, "Search and history", "", |ui| {
+            widgets::setting_row(ui, "Search history", "Show recent searches under the search box.", |ui| {
+                let mut on = !app.store.saved.search_history_off;
+                if ui.checkbox(&mut on, "").changed() {
+                    app.store.saved.search_history_off = !on;
+                    app.store.touch();
+                }
+                if ui.small_button("Clear").clicked() {
+                    app.store.saved.searches.clear();
+                    app.store.touch();
+                }
+            });
+            widgets::setting_row(ui, "Resume positions", "Videos continue where you left them.", |ui| {
+                if ui.small_button("Forget all").clicked() {
+                    app.store.saved.resume.clear();
+                    app.store.touch();
+                }
+            });
+        });
         widgets::card(ui, "Playback", "", |ui| {
             widgets::setting_row(ui, "Quality", "Auto picks the best quality your player size and connection sustain.", |ui| {
                 let label = match s.quality {
@@ -1583,10 +1440,98 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
         });
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(n).collect::<String>())
+
+/// Search filters (upload date, type, length, order, live). Answers whether one changed.
+fn search_filters(app: &mut App, ui: &mut Ui) -> bool {
+    let f = &mut app.search_filter;
+    let before = f.clone();
+    ui.horizontal_wrapped(|ui| {
+        let combo = |ui: &mut Ui, id: &str, label: &str, value: &mut Option<String>, options: &[(&str, &str)]| {
+            let shown = options
+                .iter()
+                .find(|(k, _)| value.as_deref() == Some(*k))
+                .map(|(_, l)| l.to_string())
+                .unwrap_or_else(|| label.to_string());
+            egui::ComboBox::from_id_salt(id).selected_text(shown).width(120.0).show_ui(ui, |ui| {
+                if ui.selectable_label(value.is_none(), format!("Any {}", label.to_lowercase())).clicked() {
+                    *value = None;
+                }
+                for (k, l) in options {
+                    if ui.selectable_label(value.as_deref() == Some(*k), *l).clicked() {
+                        *value = Some(k.to_string());
+                    }
+                }
+            });
+        };
+        combo(ui, "f-date", "Upload date", &mut f.date, &[("hour", "Last hour"), ("day", "Today"), ("week", "This week"), ("month", "This month"), ("year", "This year")]);
+        combo(ui, "f-kind", "Type", &mut f.kind, &[("video", "Videos"), ("channel", "Channels"), ("playlist", "Playlists")]);
+        combo(ui, "f-length", "Duration", &mut f.length, &[("short", "Under 4 minutes"), ("medium", "4–20 minutes"), ("long", "Over 20 minutes")]);
+        combo(ui, "f-sort", "Sort", &mut f.sort, &[("date", "Upload date"), ("views", "View count"), ("rating", "Rating")]);
+        ui.toggle_value(&mut f.live, "Live");
+        if !f.is_empty() && ui.small_button("Clear filters").clicked() {
+            *f = Default::default();
+        }
+    });
+    let f = &app.search_filter;
+    f.date != before.date || f.kind != before.kind || f.length != before.length || f.sort != before.sort || f.live != before.live
+}
+
+/// A channel's About tab.
+fn about(app: &mut App, ui: &mut Ui) {
+    let Some(Page::Channel { about, .. }) = app.stack.last() else { return };
+    let Some(a) = about.clone() else {
+        ui.add_space(10.0);
+        widgets::skeleton_row(ui);
+        return;
+    };
+    let text = |k: &str| a.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let num = |k: &str| a.get(k).and_then(|v| v.as_u64());
+    let mut open = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("about").show(ui, |ui| {
+        ui.add_space(10.0);
+        if let Some(e) = text("error") {
+            ui.label(RichText::new(e).color(TEXT_DIM));
+            return;
+        }
+        if let Some(d) = text("description").filter(|d| !d.is_empty()) {
+            ui.label(RichText::new("Description").font(heading_font(16.0)));
+            ui.label(d);
+            ui.add_space(10.0);
+        }
+        let links: Vec<(String, String)> = a
+            .get("links")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|l| Some((l.get("name")?.as_str()?.to_string(), l.get("url")?.as_str()?.to_string())))
+            .collect();
+        if !links.is_empty() {
+            ui.label(RichText::new("Links").font(heading_font(16.0)));
+            for (name, url) in links {
+                if ui.link(format!("{name}  ↗")).on_hover_text(&url).clicked() {
+                    open = Some(url);
+                }
+            }
+            ui.add_space(10.0);
+        }
+        ui.label(RichText::new("More info").font(heading_font(16.0)));
+        if let Some(n) = num("subscribers") {
+            ui.label(format!("{} subscribers", fmt_count(n)));
+        }
+        if let Some(n) = num("videos") {
+            ui.label(format!("{} videos", fmt_count(n)));
+        }
+        if let Some(n) = num("views") {
+            ui.label(format!("{} views", fmt_count(n)));
+        }
+        if let Some(j) = text("joined") {
+            ui.label(format!("Joined {j}"));
+        }
+        if let Some(c) = text("country") {
+            ui.label(c);
+        }
+    });
+    if let Some(u) = open {
+        app.platform.open_url(&u);
     }
 }

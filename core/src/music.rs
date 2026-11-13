@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
@@ -17,7 +17,8 @@ const CLIENT_VERSION: &str = "1.20251110.01.00";
 const ORIGIN: &str = "https://music.youtube.com";
 
 /// One thing on a Music page.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MusicItem {
     /// "song", "video", "album", "single", "playlist", "artist", "podcast", "episode", "mood".
     pub kind: String,
@@ -46,7 +47,8 @@ pub struct MusicItem {
     pub explicit: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Named {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +56,8 @@ pub struct Named {
 }
 
 /// A row of a page.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Shelf {
     pub title: String,
     /// "carousel" (cards side by side), "list" (song rows), "grid", "buttons" or "text".
@@ -69,7 +72,8 @@ pub struct Shelf {
 }
 
 /// The top of an artist, album or playlist page.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Header {
     pub title: String,
     pub subtitle: String,
@@ -95,7 +99,8 @@ pub struct Header {
     pub list_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MusicPage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<Header>,

@@ -370,6 +370,14 @@ impl Player for MpvPlayer {
         let _ = self.mpv.set_property("speed", speed as f64);
     }
 
+    fn set_loop(&mut self, on: bool) {
+        let _ = self.mpv.set_property("loop-file", if on { "inf" } else { "no" });
+    }
+
+    fn set_leveller(&mut self, on: bool) {
+        let _ = self.mpv.set_property("af", if on { "lavfi=[dynaudnorm=f=250:g=15]" } else { "" });
+    }
+
     fn state(&self) -> PlayerState {
         *self.state.lock()
     }
