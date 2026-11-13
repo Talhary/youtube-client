@@ -285,7 +285,19 @@ final class Player {
 
     /** Music layout: the cover fills the player's square. */
     void setMusic(boolean on) {
-        exo.setMusic(on);
+        exo.setMusic(on, musicCover != null && currentId != null && currentId.equals(musicCoverFor));
+    }
+
+    /** Album art for a YouTube Music song (square), used instead of the video's thumbnail. */
+    private String musicCover, musicCoverFor;
+
+    void setMusicCover(String id, String url) {
+        musicCoverFor = id;
+        musicCover = url;
+    }
+
+    private String cover(String id) {
+        return musicCover != null && id != null && id.equals(musicCoverFor) ? musicCover : thumb(id);
     }
 
     void release() {
@@ -475,7 +487,7 @@ final class Player {
                 : nativeVideo.optInt("height") + "p " + nativeVideo.optString("codec") + (nativeVideo.optBoolean("hw") ? " (hardware)" : " (software)")));
         exo.setFill(fill);
         exo.setRate(preferredRate);
-        exo.play(video, audio, positionMs, play, thumb(id));
+        exo.play(video, audio, positionMs, play, cover(id));
         applyLeveller();
     }
 
@@ -737,7 +749,7 @@ final class Player {
             case "audio":
                 if (localFile != null) {
                     // The same file keeps playing; only the picture is covered or shown.
-                    exo.showCover(audioOnly || localAudio ? thumb(currentId) : null);
+                    exo.showCover(audioOnly || localAudio ? cover(currentId) : null);
                 } else if (nativeStreams != null) {
                     startNative(exo.positionMs(), exo.wantsToPlay());
                 }
@@ -1034,7 +1046,7 @@ final class Player {
         Log.i(TAG, "native player: playing the downloaded file of " + id);
         exo.setFill(fill);
         exo.setRate(preferredRate);
-        exo.playFile(file, Math.round(Resume.startAt(id) * 1000), true, audio || audioOnly ? thumb(id) : null);
+        exo.playFile(file, Math.round(Resume.startAt(id) * 1000), true, audio || audioOnly ? cover(id) : null);
         if (exo.isActive()) {
             return;
         }

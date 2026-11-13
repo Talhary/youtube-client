@@ -430,6 +430,25 @@ final class Downloads {
         }
     }
 
+    /** A YouTube Music radio's "more" handle (-1 when the queue is not a radio). */
+    long radioCursor = -1;
+
+    /** Add songs at the end of the queue `playingId` is in (a radio growing). */
+    void appendToQueue(String playingId, List<Core.Item> items) {
+        if (playingId != null && queueIndex(playingId) < 0) {
+            return;
+        }
+        java.util.Set<String> have = new java.util.HashSet<>();
+        for (Core.Item i : queue) {
+            have.add(i.id);
+        }
+        for (Core.Item i : items) {
+            if (have.add(i.id)) {
+                queue.add(i);
+            }
+        }
+    }
+
     /** What is queued after `videoId` (empty when it is not playing from a queue). */
     List<Core.Item> queuedAfter(String videoId) {
         int at = queueIndex(videoId);

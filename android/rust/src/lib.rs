@@ -111,6 +111,29 @@ enum UiCmd {
     Feedback { req: u64, token: String },
     NotInterested { req: u64, id: String },
     PrefetchStreams { ids: Vec<String> },
+    MusicBrowse {
+        req: u64,
+        id: String,
+        #[serde(default)]
+        params: Option<String>,
+    },
+    MusicSearch {
+        req: u64,
+        query: String,
+        #[serde(default)]
+        tab: String,
+    },
+    MusicSuggest { req: u64, query: String },
+    MusicMore { req: u64, cursor: u64 },
+    MusicQueue {
+        req: u64,
+        #[serde(default)]
+        video: Option<String>,
+        #[serde(default)]
+        list: Option<String>,
+    },
+    MusicLyrics { req: u64, id: String },
+    MusicSave { req: u64, list: String, on: bool },
     More { req: u64, cursor: u64 },
     DropCursor { cursor: u64 },
     Channel { req: u64, id: String },
@@ -172,6 +195,13 @@ fn to_command(c: UiCmd) -> Command {
         UiCmd::Feedback { req, token } => Command::Feedback { req, token },
         UiCmd::NotInterested { req, id } => Command::NotInterested { req, id },
         UiCmd::PrefetchStreams { ids } => Command::PrefetchStreams { ids },
+        UiCmd::MusicBrowse { req, id, params } => Command::MusicBrowse { req, id, params },
+        UiCmd::MusicSearch { req, query, tab } => Command::MusicSearch { req, query, tab },
+        UiCmd::MusicSuggest { req, query } => Command::MusicSuggest { req, query },
+        UiCmd::MusicMore { req, cursor } => Command::MusicMore { req, cursor: Cursor(cursor) },
+        UiCmd::MusicQueue { req, video, list } => Command::MusicQueue { req, video, list },
+        UiCmd::MusicLyrics { req, id } => Command::MusicLyrics { req, id },
+        UiCmd::MusicSave { req, list, on } => Command::MusicSave { req, list, on },
         UiCmd::Suggest { req, query } => Command::Suggest { req, query },
         UiCmd::More { req, cursor } => Command::More { req, cursor: Cursor(cursor) },
         UiCmd::DropCursor { cursor } => Command::DropCursor(Cursor(cursor)),

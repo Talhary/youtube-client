@@ -338,10 +338,12 @@ final class Exo {
      * Music: the cover fills the (square) view. The thumbnail is a 4:3 picture with black
      * bars above and below, so it is enlarged until the bars are outside the view.
      */
-    void setMusic(boolean on) {
+    void setMusic(boolean on, boolean squareArt) {
         screen.cover.setScaleType(on ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
-        screen.cover.setScaleX(on ? 1.34f : 1f);
-        screen.cover.setScaleY(on ? 1.34f : 1f);
+        // Album art is square already; video thumbnails carry bars to crop away.
+        float zoom = on && !squareArt ? 1.34f : 1f;
+        screen.cover.setScaleX(zoom);
+        screen.cover.setScaleY(zoom);
         screen.setClipChildren(true);
     }
 

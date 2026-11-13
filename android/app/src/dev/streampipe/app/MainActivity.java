@@ -48,7 +48,13 @@ public final class MainActivity extends Activity
     private boolean fullscreen;
     private SettingsSheet sheet;
 
-    private final Screen[] tabs = new Screen[TAB_COUNT];
+    private static final int[] MUSIC_ICONS = {R.drawable.ic_home, R.drawable.ic_explore, R.drawable.ic_library, R.drawable.ic_settings};
+    private static final String[] MUSIC_LABELS = {"Home", "Explore", "Library", "Settings"};
+    /** YouTube's tabs and YouTube Music's; `tabs` is the set on screen. */
+    private final Screen[] videoTabs = new Screen[TAB_COUNT];
+    private final Screen[] musicTabs = new Screen[TAB_COUNT];
+    private Screen[] tabs = videoTabs;
+    private boolean musicMode;
     private final ImageView[] tabIcons = new ImageView[TAB_COUNT];
     private final TextView[] tabTexts = new TextView[TAB_COUNT];
     private int tabIndex = -1;
@@ -126,6 +132,11 @@ public final class MainActivity extends Activity
         root.addView(sheet, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
 
         PlaybackService.controller = this;
+        if (prefs().getBoolean("musicMode", false)) {
+            musicMode = true;
+            tabs = musicTabs;
+            labelTabs();
+        }
         // After a theme change the app is redrawn; come back to the tab the user was on.
         selectTab(restoreTab >= 0 && restoreTab < TAB_COUNT ? restoreTab : 0);
         restoreTab = -1;
@@ -253,7 +264,7 @@ public final class MainActivity extends Activity
     protected void onStop() {
         super.onStop();
         android.util.Log.i("StreamPipe", "app: onStop keepPlaying=" + keepPlaying());
-        if (tabIndex == TAB_SHORTS && tabs[TAB_SHORTS] != null) {
+        if (onShorts()) {
             tabs[TAB_SHORTS].onHidden();
         }
         if (!keepPlaying()) {
@@ -269,7 +280,7 @@ public final class MainActivity extends Activity
     protected void onStart() {
         super.onStart();
         android.util.Log.i("StreamPipe", "app: onStart");
-        if (tabIndex == TAB_SHORTS && tabs[TAB_SHORTS] != null && stack.isEmpty() && !watch.isExpanded()) {
+        if (onShorts() && stack.isEmpty() && !watch.isExpanded()) {
             tabs[TAB_SHORTS].onShown();
         }
         player.web.keepAlive = false;
@@ -290,8 +301,8 @@ public final class MainActivity extends Activity
             }
         }
         root.removeAllViews();
-        if (tabs[TAB_SHORTS] != null) {
-            ((ShortsScreen) tabs[TAB_SHORTS]).destroy();
+        if (videoTabs[TAB_SHORTS] != null) {
+            ((ShortsScreen) videoTabs[TAB_SHORTS]).destroy();
         }
         player.web.destroy();
         player.release();
@@ -341,7 +352,7 @@ public final class MainActivity extends Activity
             watch.minimize();
         } else if (top != null) {
             pop();
-        } else if (tabIndex == TAB_SHORTS && ((ShortsScreen) tabs[TAB_SHORTS]).goBack()) {
+        } else if (onShorts() && ((ShortsScreen) tabs[TAB_SHORTS]).goBack()) {
             // Went back to the previous Short.
         } else if (tabIndex != 0) {
             selectTab(0);
@@ -352,7 +363,29 @@ public final class MainActivity extends Activity
 
     // ------------------------------------------------------------------ tabs and pages
 
+    /** The Shorts tab is the one on screen. */
+    private boolean onShorts() {
+        return !musicMode && tabIndex == TAB_SHORTS && tabs[TAB_SHORTS] != null;
+    }
+
     private Screen tab(int i) {
+        if (tabs[i] == null && musicMode) {
+            switch (i) {
+                case 0:
+                    tabs[i] = new MusicHomeScreen(this, this);
+                    break;
+                case 1:
+                    tabs[i] = new MusicExploreScreen(this, this);
+                    break;
+                case 2:
+                    tabs[i] = new MusicLibraryScreen(this, this);
+                    break;
+                default:
+                    tabs[i] = new SettingsScreen(this, this);
+            }
+            tabs[i].view.setVisibility(View.GONE);
+            content.addView(tabs[i].view, 0, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
+        }
         if (tabs[i] == null) {
             switch (i) {
                 case 0:
@@ -411,7 +444,7 @@ public final class MainActivity extends Activity
             old.onHidden();
         }
         // Shorts and a playing video would talk over each other.
-        if (i == TAB_SHORTS && watch.isOpen() && player.playing) {
+        if (!musicMode && i == TAB_SHORTS && watch.isOpen() && player.playing) {
             player.command("pause");
         }
         next.view.animate().cancel();
@@ -480,6 +513,10 @@ public final class MainActivity extends Activity
 
     @Override
     public void open(Core.Item item) {
+        if (item.music && !item.playable()) {
+            push(new MusicPageScreen(this, this, item));
+            return;
+        }
         switch (item.type) {
             case Core.Item.CHANNEL:
                 push(new ChannelScreen(this, this, item.id, item.title));
@@ -488,7 +525,7 @@ public final class MainActivity extends Activity
                 push(ListScreen.playlist(this, this, item.id, item.title));
                 break;
             default:
-                if (tabIndex == TAB_SHORTS && tabs[TAB_SHORTS] != null) {
+                if (onShorts()) {
                     tabs[TAB_SHORTS].onHidden();
                 }
                 watch.show(item);
@@ -538,9 +575,11 @@ public final class MainActivity extends Activity
 
     @Override
     public void onCoreChanged() {
-        for (Screen s : tabs) {
-            if (s != null) {
-                s.onCoreChanged();
+        for (Screen[] set : new Screen[][] {videoTabs, musicTabs}) {
+            for (Screen s : set) {
+                if (s != null) {
+                    s.onCoreChanged();
+                }
             }
         }
         for (Screen s : stack) {
@@ -572,7 +611,61 @@ public final class MainActivity extends Activity
 
     @Override
     public void openChannel(String id, String name) {
+        if (watch.current != null && watch.current.music) {
+            push(new MusicPageScreen(this, this, MusicPlay.page(id, "artist", name)));
+            return;
+        }
         push(new ChannelScreen(this, this, id, name));
+    }
+
+    @Override
+    public boolean musicMode() {
+        return musicMode;
+    }
+
+    @Override
+    public void setMusicMode(boolean on) {
+        if (on == musicMode) {
+            return;
+        }
+        prefs().edit().putBoolean("musicMode", on).apply();
+        while (!stack.isEmpty()) {
+            removeTop(false);
+        }
+        if (tabIndex >= 0 && tabs[tabIndex] != null) {
+            tabs[tabIndex].view.setVisibility(View.GONE);
+            tabs[tabIndex].onHidden();
+        }
+        musicMode = on;
+        tabs = on ? musicTabs : videoTabs;
+        labelTabs();
+        tabIndex = -1;
+        selectTab(0);
+    }
+
+    /** The bottom bar's names and icons for the mode (music has four tabs). */
+    private void labelTabs() {
+        for (int i = 0; i < TAB_COUNT; i++) {
+            View item = (View) tabIcons[i].getParent();
+            if (musicMode && i >= MUSIC_LABELS.length) {
+                item.setVisibility(View.GONE);
+                continue;
+            }
+            item.setVisibility(View.VISIBLE);
+            tabIcons[i].setImageResource(musicMode ? MUSIC_ICONS[i] : TAB_ICONS[i]);
+            tabTexts[i].setText(musicMode ? MUSIC_LABELS[i] : TAB_LABELS[i]);
+            item.setContentDescription(musicMode ? MUSIC_LABELS[i] : TAB_LABELS[i]);
+        }
+    }
+
+    @Override
+    public void queueChanged() {
+        watch.refreshUpNext();
+    }
+
+    @Override
+    public void toast(String text) {
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
     }
 
     @Override

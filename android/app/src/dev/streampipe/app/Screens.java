@@ -61,6 +61,16 @@ interface Nav {
 
     /** Play `item` after the current video (`next`), or at the end of the queue. */
     void queue(Core.Item item, boolean next);
+
+    /** YouTube Music (true) or YouTube. */
+    void setMusicMode(boolean on);
+
+    boolean musicMode();
+
+    /** The play queue changed (the watch screen lists it under Up next). */
+    void queueChanged();
+
+    void toast(String text);
 }
 
 /** One page of the app: a view plus a few hooks. */
@@ -166,6 +176,15 @@ final class FeedScreen extends Screen {
         logo.setSpan(new ForegroundColorSpan(Ui.ACCENT), 6, 10, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         TextView title = Ui.text(c, 20, Ui.TEXT, true);
         title.setText(subscriptions ? "Subscriptions" : logo);
+        if (!subscriptions) {
+            // The logo switches to YouTube Music, as the two official apps are one here.
+            SpannableString both = new SpannableString("StreamPipe  ⇄ Music");
+            both.setSpan(new ForegroundColorSpan(Ui.ACCENT), 6, 10, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            both.setSpan(new ForegroundColorSpan(Ui.MUTE), 10, both.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            title.setText(both);
+            title.setContentDescription("YouTube. Tap to switch to YouTube Music");
+            title.setOnClickListener(v -> nav.setMusicMode(true));
+        }
         list = new FeedList(c, false, nav::open);
         // "Not interested" applies to what YouTube recommends.
         list.setMenu(nav, !subscriptions);

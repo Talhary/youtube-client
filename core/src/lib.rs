@@ -8,6 +8,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod download;
 pub mod model;
+pub mod music;
 pub mod mux;
 pub mod proxy;
 pub mod remote;

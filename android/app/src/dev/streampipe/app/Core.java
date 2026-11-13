@@ -56,6 +56,79 @@ final class Core implements Native.Listener {
         String localUri;
         String localMime;
         boolean localAudio;
+        /**
+         * A YouTube Music entry: `kind` is "song", "video", "album", "single", "playlist",
+         * "artist", "podcast", "episode", "mood" or "page"; `id` is the video id (songs,
+         * videos) or the page to open.
+         */
+        boolean music;
+        String kind;
+        String params;
+        String albumId;
+        String albumName;
+        String duration;
+        int color;
+
+        /** Plays (a song, video or episode) rather than opening a page. */
+        boolean playable() {
+            return !music || "song".equals(kind) || "video".equals(kind) || "episode".equals(kind);
+        }
+
+        static Item music(JSONObject o) {
+            Item i = new Item();
+            i.music = true;
+            i.kind = o.optString("kind");
+            i.id = o.optString("id");
+            i.params = str(o, "params");
+            i.title = o.optString("title");
+            i.published = o.optString("subtitle", null);
+            if (i.published != null && i.published.isEmpty()) {
+                i.published = null;
+            }
+            i.thumb = url(str(o, "thumbnail"));
+            i.duration = str(o, "duration");
+            i.durationS = parseDuration(i.duration);
+            i.color = (int) o.optLong("color", 0);
+            JSONArray artists = o.optJSONArray("artists");
+            StringBuilder names = new StringBuilder();
+            for (int k = 0; artists != null && k < artists.length(); k++) {
+                JSONObject a = artists.optJSONObject(k);
+                if (a == null) {
+                    continue;
+                }
+                if (names.length() > 0) {
+                    names.append(", ");
+                }
+                names.append(a.optString("name"));
+                if (i.channelId == null && !a.isNull("id")) {
+                    i.channelId = a.optString("id", null);
+                }
+            }
+            i.channelName = names.length() > 0 ? names.toString() : null;
+            JSONObject album = o.optJSONObject("album");
+            if (album != null) {
+                i.albumName = album.optString("name");
+                i.albumId = str(album, "id");
+            }
+            i.type = i.playable() ? VIDEO : "artist".equals(i.kind) ? CHANNEL : PLAYLIST;
+            return i;
+        }
+
+        static int parseDuration(String d) {
+            if (d == null || d.isEmpty()) {
+                return -1;
+            }
+            int s = 0;
+            try {
+                for (String p : d.split(":")) {
+                    s = s * 60 + Integer.parseInt(p.trim());
+                }
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+            return s;
+        }
+
         /** A post: its text, likes, pictures, and the video attached to it. */
         String text;
         String likes;

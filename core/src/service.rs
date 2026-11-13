@@ -61,6 +61,19 @@ pub enum Command {
     /// Videos on screen in a list: resolve their streams and read their details now, so
     /// one that is opened starts at once.
     PrefetchStreams { ids: Vec<String> },
+
+    /// A YouTube Music page (answered as an action holding a [`crate::music::MusicPage`]).
+    MusicBrowse { req: ReqId, id: String, params: Option<String> },
+    /// A YouTube Music search; `tab` is "", "songs", "videos", "albums", "artists", "playlists" or "podcasts".
+    MusicSearch { req: ReqId, query: String, tab: String },
+    MusicSuggest { req: ReqId, query: String },
+    /// More of a Music page, search or queue.
+    MusicMore { req: ReqId, cursor: Cursor },
+    /// What plays after a song (its radio), or the songs of a list.
+    MusicQueue { req: ReqId, video: Option<String>, list: Option<String> },
+    MusicLyrics { req: ReqId, id: String },
+    /// Save an album or playlist to the library, or take it out.
+    MusicSave { req: ReqId, list: String, on: bool },
     Suggest { req: ReqId, query: String },
     More { req: ReqId, cursor: Cursor },
     DropCursor(Cursor),
@@ -422,6 +435,8 @@ struct State {
     ratings: Mutex<HashMap<String, String>>,
     /// "Not interested" handles of listed videos, by video id.
     dismiss: Mutex<HashMap<String, String>>,
+    /// "Load more" handles of YouTube Music pages, searches and queues.
+    music_cursors: Mutex<HashMap<u64, crate::music::More>>,
     /// What watch pages said about videos' chat, preview pictures and liveness.
     extras: Mutex<HashMap<String, crate::webfeed::Personal>>,
     /// Resolves direct stream URLs for the app's own player.
@@ -547,6 +562,7 @@ impl Core {
                 stream_slots: tokio::sync::Semaphore::new(2),
                 ratings: Mutex::new(HashMap::new()),
                 dismiss: Mutex::new(HashMap::new()),
+                music_cursors: Mutex::new(HashMap::new()),
                 extras: Mutex::new(HashMap::new()),
                 tracking: Mutex::new(HashMap::new()),
                 watch_reports: Mutex::new(HashMap::new()),
@@ -927,6 +943,20 @@ fn remember_personal(st: &State, id: &str, personal: crate::webfeed::Personal) {
     }
 }
 
+/// A Music page as JSON for the app, with a cursor for more when there is more.
+fn music_answer(st: &State, mut page: crate::music::MusicPage, more: Option<crate::music::More>) -> serde_json::Value {
+    if let Some(m) = more {
+        let id = st.next_web_cursor.fetch_add(1, Ordering::Relaxed);
+        let mut map = st.music_cursors.lock();
+        if map.len() > 64 {
+            map.clear();
+        }
+        map.insert(id, m);
+        page.next = Some(id);
+    }
+    serde_json::to_value(&page).unwrap_or_default()
+}
+
 fn remember_dismiss(st: &State, list: crate::webfeed::Dismiss) {
     let mut map = st.dismiss.lock();
     if map.len() > 600 {
@@ -1225,6 +1255,60 @@ async fn handle(st: Arc<State>, cmd: Command) {
                     st.stream_prefetching.lock().remove(&id);
                 });
             }
+        }
+        Command::MusicBrowse { req, id, params } => {
+            let cookie = session_cookie(&st);
+            let result = crate::music::browse(&st.http, cookie.as_deref(), &id, params.as_deref())
+                .await
+                .map(|(page, more)| music_answer(&st, page, more));
+            emit(Event::Action { req, result })
+        }
+        Command::MusicSearch { req, query, tab } => {
+            let cookie = session_cookie(&st);
+            let result = crate::music::search(&st.http, cookie.as_deref(), &query, &tab)
+                .await
+                .map(|(page, more)| music_answer(&st, page, more));
+            emit(Event::Action { req, result })
+        }
+        Command::MusicSuggest { req, query } => {
+            let cookie = session_cookie(&st);
+            let items = crate::music::suggest(&st.http, cookie.as_deref(), &query).await.unwrap_or_default();
+            emit(Event::Suggestions { req, items })
+        }
+        Command::MusicMore { req, cursor } => {
+            let taken = st.music_cursors.lock().remove(&cursor.0);
+            let result = match taken {
+                None => Err("this list cannot load more".to_string()),
+                Some(m) => {
+                    let cookie = session_cookie(&st);
+                    crate::music::more(&st.http, cookie.as_deref(), &m).await.map(|(page, more)| music_answer(&st, page, more))
+                }
+            };
+            emit(Event::Action { req, result })
+        }
+        Command::MusicQueue { req, video, list } => {
+            let cookie = session_cookie(&st);
+            let result = crate::music::queue(&st.http, cookie.as_deref(), video.as_deref(), list.as_deref())
+                .await
+                .map(|(mut v, more)| {
+                    if let Some(m) = more {
+                        let id = st.next_web_cursor.fetch_add(1, Ordering::Relaxed);
+                        st.music_cursors.lock().insert(id, m);
+                        v["next"] = serde_json::json!(id);
+                    }
+                    v
+                });
+            emit(Event::Action { req, result })
+        }
+        Command::MusicLyrics { req, id } => {
+            let cookie = session_cookie(&st);
+            let result = crate::music::lyrics(&st.http, cookie.as_deref(), &id).await;
+            emit(Event::Action { req, result })
+        }
+        Command::MusicSave { req, list, on } => {
+            let http = st.http.clone();
+            let result = signed(&st, |c| async move { crate::music::save(&http, &c, &list, on).await.map(|()| serde_json::json!({"saved": on})) }).await;
+            emit(Event::Action { req, result })
         }
         Command::NotInterested { req, id } => {
             let token = st.dismiss.lock().get(&id).cloned();

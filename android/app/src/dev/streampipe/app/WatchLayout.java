@@ -75,6 +75,17 @@ final class WatchLayout extends FrameLayout {
     private final CommentsPanel comments;
     private final LiveChatPanel chat;
     private final LinearLayout commentsCard;
+    /** YouTube Music: the tabs under the player, the chosen one, and the lyrics. */
+    private final View musicTabs;
+    private int musicTab;
+    private final TextView lyrics;
+    /** The song's lyrics and related pages (from its queue answer). */
+    private String lyricsId, relatedId, musicInfoFor;
+    /** Music plays as video (the Song/Video switch). */
+    private boolean musicVideo;
+    /** The user's own Audio only choice, for videos (read from the player at the first video). */
+    private boolean userAudioOnly;
+    private boolean userAudioKnown;
     private final ImageView teaserAvatar;
     private final TextView teaserText;
     private final LinearLayout chatButton;
@@ -203,7 +214,14 @@ final class WatchLayout extends FrameLayout {
         audioButton.addView(audioLabel, Ui.lin(Ui.WRAP, Ui.WRAP));
         audioButton.setOnClickListener(v -> {
             boolean on = !player.audioOnly;
-            host.setAudioOnly(on);
+            if (current != null && current.music) {
+                // YouTube Music: Song (sound and album art) or Video; the choice carries on.
+                musicVideo = !on;
+                player.setAudioOnly(on);
+            } else {
+                userAudioOnly = on;
+                host.setAudioOnly(on);
+            }
             showAudioOnly(on);
             updateMusic();
         });
@@ -308,6 +326,18 @@ final class WatchLayout extends FrameLayout {
         LinearLayout.LayoutParams ccl = Ui.lin(Ui.MATCH, Ui.WRAP);
         ccl.setMargins(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(6));
         header.addView(commentsCard, ccl);
+
+        // YouTube Music: Up next, Lyrics and Related, as the Music player's tabs.
+        musicTabs = chipsRow(c, new String[] {"Up next", "Lyrics", "Related"}, i -> {
+            musicTab = i;
+            WatchLayout.this.details.load();
+        });
+        header.addView(musicTabs, Ui.lin(Ui.MATCH, Ui.WRAP));
+        lyrics = Ui.text(c, 16, Ui.TEXT, false);
+        lyrics.setLineSpacing(Ui.dp(6), 1f);
+        lyrics.setPadding(Ui.dp(20), Ui.dp(8), Ui.dp(20), Ui.dp(24));
+        lyrics.setVisibility(GONE);
+        header.addView(lyrics, Ui.lin(Ui.MATCH, Ui.WRAP));
 
         // Chapters: one card per chapter, tap to go there.
         LinearLayout chapters = Ui.column(c);
@@ -872,7 +902,27 @@ final class WatchLayout extends FrameLayout {
         Downloads.get().useFile(video);
         boolean same = current != null && current.id.equals(video.id) && open
                 && java.util.Objects.equals(current.localUri, video.localUri);
+        if (!userAudioKnown) {
+            userAudioKnown = true;
+            userAudioOnly = player.audioOnly;
+        }
         current = video;
+        if (!same) {
+            if (video.music) {
+                // Songs play as sound with their album art unless Video was chosen.
+                player.audioOnly = !musicVideo;
+                String art = video.thumb != null && video.thumb.contains("googleusercontent") ? video.thumb : null;
+                player.setMusicCover(video.id, art);
+                if (musicInfoFor == null || !musicInfoFor.equals(video.id)) {
+                    lyricsId = null;
+                    relatedId = null;
+                    musicInfoFor = null;
+                }
+            } else {
+                player.audioOnly = userAudioOnly;
+                player.setMusicCover(null, null);
+            }
+        }
         // The mode carries over between videos; the button must say so.
         showAudioOnly(player.audioOnly);
         bindHeader(null);
@@ -1036,12 +1086,134 @@ final class WatchLayout extends FrameLayout {
         description.setMaxLines(2);
         descriptionToggle.setText("Show more");
         ((View) description.getParent()).setVisibility(d.isEmpty() ? GONE : VISIBLE);
+        boolean music = v.music;
+        musicTabs.setVisibility(music ? VISIBLE : GONE);
+        commentsCard.setVisibility(music ? GONE : VISIBLE);
+        lyrics.setVisibility(music && musicTab == 1 ? VISIBLE : GONE);
+        audioLabel.setText(music ? (player.audioOnly ? "Song" : "Video") : "Audio only");
+        if (music) {
+            String line = Ui.join(v.channelName, v.albumName, v.duration);
+            meta.setText(line);
+            meta.setVisibility(line.isEmpty() ? GONE : VISIBLE);
+        }
+    }
+
+    /** A row of chips (a static helper of the screens, reused here). */
+    private static View chipsRow(Context c, String[] labels, Sheet.Pick pick) {
+        return Screen.chips(c, labels, 0, pick);
+    }
+
+    /** Up next (the queue, growing the radio), Lyrics or Related of a YouTube Music song. */
+    private void loadMusicDetails(final Core.Item v, final FeedList.Result result) {
+        final int mine = ++detailsGeneration;
+        lyrics.setVisibility(musicTab == 1 ? VISIBLE : GONE);
+        if (musicTab == 0) {
+            final java.util.List<Core.Item> queued = Downloads.get().queuedAfter(v.id);
+            nextUp = queued.isEmpty() ? null : queued.get(0);
+            if (Core.get().prefetch && !queued.isEmpty()) {
+                // The next songs start at once when this one ends or Next is pressed.
+                final org.json.JSONArray ids = new org.json.JSONArray();
+                for (int i = 0; i < Math.min(2, queued.size()); i++) {
+                    if (queued.get(i).localUri == null) {
+                        ids.put(queued.get(i).id);
+                    }
+                }
+                postDelayed(() -> Core.get().send("prefetch_streams", "ids", ids), 2500);
+            }
+            Core.Page page = new Core.Page();
+            page.items.addAll(queued);
+            result.page(page, null);
+            final long cursor = Downloads.get().radioCursor;
+            if (queued.size() < 4 && cursor >= 0) {
+                // The radio is running out: the next part of the mix.
+                Downloads.get().radioCursor = -1;
+                Core.get().call((e, err) -> {
+                    JSONObject ok = e == null ? null : e.optJSONObject("ok");
+                    org.json.JSONArray shelves = ok == null ? null : ok.optJSONArray("shelves");
+                    JSONObject shelf = shelves == null ? null : shelves.optJSONObject(0);
+                    org.json.JSONArray items = shelf == null ? null : shelf.optJSONArray("items");
+                    java.util.List<Core.Item> more = new java.util.ArrayList<>();
+                    for (int i = 0; items != null && i < items.length(); i++) {
+                        more.add(Core.Item.music(items.optJSONObject(i)));
+                    }
+                    Downloads.get().radioCursor = ok == null || ok.isNull("next") ? -1 : ok.optLong("next", -1);
+                    if (!more.isEmpty() && current == v) {
+                        Downloads.get().appendToQueue(v.id, more);
+                        if (musicTab == 0 && mine == detailsGeneration) {
+                            details.load();
+                        }
+                    }
+                }, "music_more", "cursor", cursor);
+            }
+            return;
+        }
+        if (musicInfoFor == null || !musicInfoFor.equals(v.id)) {
+            // The song's own queue answer names its lyrics and related pages.
+            Core.get().call((e, err) -> {
+                if (mine != detailsGeneration || current != v) {
+                    return;
+                }
+                JSONObject ok = e == null ? null : e.optJSONObject("ok");
+                if (ok == null) {
+                    result.page(null, err == null ? "No answer." : err);
+                    return;
+                }
+                musicInfoFor = v.id;
+                lyricsId = ok.isNull("lyrics") ? null : ok.optString("lyrics", null);
+                relatedId = ok.isNull("related") ? null : ok.optString("related", null);
+                loadMusicDetails(v, result);
+            }, "music_queue", "video", v.id);
+            return;
+        }
+        if (musicTab == 1) {
+            result.page(new Core.Page(), null);
+            if (lyricsId == null) {
+                lyrics.setText("No lyrics for this song.");
+                return;
+            }
+            lyrics.setText("Loading lyrics…");
+            Core.get().call((e, err) -> {
+                if (mine != detailsGeneration) {
+                    return;
+                }
+                JSONObject ok = e == null ? null : e.optJSONObject("ok");
+                String text = ok == null || ok.isNull("text") ? null : ok.optString("text", null);
+                String source = ok == null || ok.isNull("source") ? null : ok.optString("source", null);
+                lyrics.setText(text == null ? "No lyrics for this song." : source == null ? text : text + "\n\n" + source);
+            }, "music_lyrics", "id", lyricsId);
+            return;
+        }
+        if (relatedId == null) {
+            result.page(new Core.Page(), null);
+            return;
+        }
+        Core.get().call((e, err) -> {
+            if (mine != detailsGeneration) {
+                return;
+            }
+            JSONObject ok = e == null ? null : e.optJSONObject("ok");
+            if (ok == null) {
+                result.page(null, err == null ? "No answer." : err);
+                return;
+            }
+            Core.Page page = new Core.Page();
+            org.json.JSONArray shelves = ok.optJSONArray("shelves");
+            for (int s = 0; shelves != null && s < shelves.length(); s++) {
+                MusicList.Shelf shelf = MusicList.Shelf.parse(shelves.optJSONObject(s));
+                page.items.addAll(shelf.items);
+            }
+            result.page(page, null);
+        }, "music_browse", "id", relatedId);
     }
 
     private void loadDetails(final FeedList.Result result) {
         final Core.Item v = current;
         if (v == null) {
             result.page(new Core.Page(), null);
+            return;
+        }
+        if (v.music && v.localUri == null) {
+            loadMusicDetails(v, result);
             return;
         }
         final int mine = ++detailsGeneration;
