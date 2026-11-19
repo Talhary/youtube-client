@@ -29,9 +29,12 @@
 /third_party/ffmpeg/
 /third_party/media3/*.aar
 
-# The stream resolver lives in its own repository (talhary-dot/yt-parser); its
-# checkout here also holds session cookies. Build libytp.so from that repository.
+# The stream resolver lives in its own (private) repository; its checkout here
+# also holds session cookies. Build libytp.so from that repository.
 /third_party/yt-parser-src/
+
+# Local experiments (not part of the app)
+/android/tools/
 
 # Anything that looks like a session
 cookies*.txt

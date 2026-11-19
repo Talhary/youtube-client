@@ -8,7 +8,7 @@ use rustypipe::client::ClientType;
 use serde::{Deserialize, Serialize};
 
 /// GitHub `owner/repo` for remote config and update checks.
-pub const REPO: &str = "talhatechs/streampipe";
+pub const REPO: &str = "Talhary/youtube-client";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]

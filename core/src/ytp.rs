@@ -1,6 +1,6 @@
 //! Direct stream resolver: a video id becomes plain stream URLs in about a second.
 //!
-//! A port of the method in `talhary-dot/yt-parser` (its `MAP.md` has the measurements):
+//! A port of the method in the yt-parser resolver library:
 //!
 //! - **public path**: the iOS client. One request, plain URLs, no cookies, no JavaScript.
 //! - **signed-in path**: the TV client with the user's cookies. Works for age-restricted and
