@@ -248,7 +248,7 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
                         return false;
                     }
                     float side = e1.getX() / Math.max(1, getWidth());
-                    swipe = side < 0.35f ? 1 : side > 0.65f ? 2 : -1;
+                    swipe = !swipeControls ? -1 : side < 0.35f ? 1 : side > 0.65f ? 2 : -1;
                     swipeStartValue = swipe == 1 ? brightness() : swipe == 2 ? volume() : 0;
                 }
                 if (swipe <= 0) {
@@ -433,8 +433,11 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
     }
 
     /** Is a sideways-of-centre vertical swipe in fullscreen ours (brightness, volume)? */
+    /** Swipes for brightness (left) and volume (right) in fullscreen; Settings, off by default. */
+    static boolean swipeControls;
+
     boolean ownsSwipeAt(float x) {
-        if (!fullscreen || getWidth() == 0) {
+        if (!swipeControls || !fullscreen || getWidth() == 0) {
             return false;
         }
         float side = x / getWidth();

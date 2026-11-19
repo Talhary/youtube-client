@@ -985,6 +985,13 @@ fn remember_dismiss(st: &State, list: crate::webfeed::Dismiss) {
 }
 
 /// Pages anyone can see, read with the session when there is one.
+/// Most of the videos in `p` came without views, age and length (nothing to show under them).
+fn bare(p: &Page) -> bool {
+    let videos: Vec<&VideoCard> = p.items.iter().filter_map(|i| if let Item::Video(v) = i { Some(v) } else { None }).collect();
+    let empty = videos.iter().filter(|v| v.views.is_none() && v.published.is_none() && v.duration_s.is_none()).count();
+    !videos.is_empty() && empty * 2 > videos.len()
+}
+
 async fn web_list(st: &State, url: &str, feed: crate::webfeed::Feed) -> Result<Page, String> {
     let cookie = session_cookie(st);
     let (page, more, dismiss) = crate::webfeed::fetch_url(&st.http, cookie.as_deref(), url, feed).await?;
@@ -1125,6 +1132,9 @@ async fn handle(st: Arc<State>, cmd: Command) {
                 "posts" => web_list(&st, &format!("https://www.youtube.com/channel/{id}/posts"), crate::webfeed::Feed::Posts).await,
                 "playlists" => s(st.api.channel_playlists(&id).await),
                 other => match st.api.channel_tab(&id, other).await {
+                    Ok(p) if other != "shorts" && bare(&p) => web_list(&st, &format!("https://www.youtube.com/channel/{id}/{other}"), crate::webfeed::Feed::Videos)
+                        .await
+                        .or(Ok(p)),
                     Ok(p) => Ok(p),
                     // The extractor can fail on a tab; the channel's own page is the second source.
                     Err(e) => web_list(&st, &format!("https://www.youtube.com/channel/{id}/{other}"), crate::webfeed::Feed::Videos)
@@ -1381,10 +1391,21 @@ async fn handle(st: Arc<State>, cmd: Command) {
                 st.api.drop_cursor(c)
             }
         }
-        Command::Channel { req, id } => emit(Event::Channel {
-            req,
-            result: s(st.api.channel(&id).await),
-        }),
+        Command::Channel { req, id } => {
+            let mut result = s(st.api.channel(&id).await);
+            // On YouTube's newer channel layout the extractor's videos come without views,
+            // age or length; the channel's own Videos page has them.
+            if let Ok(page) = result.as_mut() {
+                if bare(&page.videos) {
+                    match web_list(&st, &format!("https://www.youtube.com/channel/{id}/videos"), crate::webfeed::Feed::Videos).await {
+                        Ok(web) if !web.items.is_empty() => page.videos = web,
+                        Ok(_) => {}
+                        Err(e) => tracing::info!("channel {id}: videos page: {e}"),
+                    }
+                }
+            }
+            emit(Event::Channel { req, result })
+        }
         Command::ChannelPlaylists { req, id } => emit(Event::Page {
             req,
             result: s(st.api.channel_playlists(&id).await),

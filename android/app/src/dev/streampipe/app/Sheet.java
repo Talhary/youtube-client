@@ -74,6 +74,14 @@ final class Sheet {
     }
 
     /** A row with an icon (0 for none) and a label; tapping it closes the sheet first. */
+    /** Rows drawn as outlined cards, so each choice reads as its own button. */
+    private boolean boxed;
+
+    Sheet boxed() {
+        boxed = true;
+        return this;
+    }
+
     Sheet add(int icon, String label, Runnable onTap) {
         return add(icon, label, null, onTap);
     }
@@ -104,7 +112,20 @@ final class Sheet {
             dialog.dismiss();
             onTap.run();
         });
-        body.addView(row, Ui.lin(Ui.MATCH, Ui.WRAP));
+        LinearLayout.LayoutParams lp = Ui.lin(Ui.MATCH, Ui.WRAP);
+        if (boxed) {
+            android.graphics.drawable.GradientDrawable card = new android.graphics.drawable.GradientDrawable();
+            card.setCornerRadius(Ui.dp(12));
+            card.setColor(Ui.light ? 0xFFF7F7F7 : 0x14FFFFFF);
+            card.setStroke(Math.max(1, Ui.dp(1)), Ui.light ? 0x26000000 : 0x33FFFFFF);
+            row.setForeground(null);
+            row.setBackground(new android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(Ui.RIPPLE), card, null));
+            row.setPadding(Ui.dp(8), Ui.dp(10), Ui.dp(16), Ui.dp(10));
+            row.setElevation(Ui.dp(1));
+            lp.setMargins(Ui.dp(14), Ui.dp(5), Ui.dp(14), Ui.dp(5));
+        }
+        body.addView(row, lp);
         return this;
     }
 

@@ -98,7 +98,8 @@ final class WatchLayout extends FrameLayout {
     private final View glow;
     private int glowColor;
     private final Runnable ambientTick = this::ambient;
-    private final LinearLayout miniBar;
+    /** The floating mini player's buttons and progress line, laid over the shrunken video. */
+    private final FrameLayout miniBar;
     private android.graphics.drawable.Drawable miniLineDrawable;
     private final TextView miniTitle, miniChannel;
     private final ImageView miniPlay;
@@ -136,6 +137,8 @@ final class WatchLayout extends FrameLayout {
 
     private float downX, downY, startProgress;
     private boolean tracking, dragging, horizontal;
+    /** The current touch started on the details below the player. */
+    private boolean downOnPage;
 
     /** The video on screen, the one that plays next, and a counter to drop stale answers. */
     Core.Item current;
@@ -466,29 +469,25 @@ final class WatchLayout extends FrameLayout {
         chat = new LiveChatPanel(c);
         addView(chat, new LayoutParams(Ui.MATCH, Ui.MATCH));
 
-        // The mini bar: its left end is left free for the shrunken player.
-        miniBar = Ui.row(c);
-        // YouTube's mini player: a grey bar with a thin red progress line along its bottom.
+        // The mini player, as in YouTube's app: the video floats in a rounded window at the
+        // bottom right, with play/pause and close on it and a thin red line for progress.
+        miniBar = new FrameLayout(c);
         android.graphics.drawable.ClipDrawable red = new android.graphics.drawable.ClipDrawable(
                 new android.graphics.drawable.ColorDrawable(Ui.RED), Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL);
-        android.graphics.drawable.LayerDrawable miniBg = new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[] {
-                new android.graphics.drawable.ColorDrawable(Ui.SHEET), red});
-        miniBg.setLayerGravity(1, Gravity.BOTTOM | Gravity.FILL_HORIZONTAL);
-        miniBg.setLayerHeight(1, Ui.dp(2));
-        miniBar.setBackground(miniBg);
+        View redLine = new View(c);
+        redLine.setBackground(red);
+        miniBar.addView(redLine, Ui.frame(Ui.MATCH, Ui.dp(2.5f), Gravity.BOTTOM));
         miniLineDrawable = red;
-        LinearLayout texts = Ui.column(c);
-        texts.setGravity(Gravity.CENTER_VERTICAL);
+        // Title and channel are kept for the notification and accessibility; not drawn.
         miniTitle = Ui.lines(Ui.text(c, 14, Ui.TEXT, true), 1);
-        texts.addView(miniTitle, Ui.lin(Ui.MATCH, Ui.WRAP));
         miniChannel = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
-        miniChannel.setPadding(0, Ui.dp(4), 0, 0);
-        texts.addView(miniChannel, Ui.lin(Ui.MATCH, Ui.WRAP));
-        miniBar.addView(texts, Ui.weight(Ui.WRAP));
         miniPlay = Ui.iconButton(c, R.drawable.ic_pause, "Pause", v -> player.command("toggle"));
-        miniBar.addView(miniPlay);
-        miniBar.addView(Ui.iconButton(c, R.drawable.ic_close, "Close video", v -> close()));
-        addView(miniBar, Ui.frame(Ui.MATCH, Ui.dp(MINI_HEIGHT_DP), Gravity.TOP));
+        miniPlay.setImageTintList(android.content.res.ColorStateList.valueOf(0xFFFFFFFF));
+        miniBar.addView(miniPlay, Ui.frame(Ui.dp(44), Ui.dp(44), Gravity.TOP | Gravity.START));
+        ImageView miniClose = Ui.iconButton(c, R.drawable.ic_close, "Close video", v -> close());
+        miniClose.setImageTintList(android.content.res.ColorStateList.valueOf(0xFFFFFFFF));
+        miniBar.addView(miniClose, Ui.frame(Ui.dp(44), Ui.dp(44), Gravity.TOP | Gravity.END));
+        Ui.clipRound(miniBar, 12);
 
         playerFrame = new FrameLayout(c);
         playerFrame.setBackgroundColor(Color.BLACK);
@@ -562,6 +561,16 @@ final class WatchLayout extends FrameLayout {
             }
         });
         addView(playerFrame, Ui.frame(Ui.MATCH, 0, Gravity.TOP));
+        addView(miniBar, Ui.frame(0, 0, Gravity.TOP | Gravity.START));
+        playerFrame.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, android.graphics.Outline outline) {
+                // Rounded as the mini window shrinks (the radius is set before scaling).
+                float sx = Math.max(0.05f, view.getScaleX());
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), progress * Ui.dp(12) / sx);
+            }
+        });
+        playerFrame.setClipToOutline(true);
     }
 
     private static LinearLayout.LayoutParams pillGap() {
@@ -844,7 +853,7 @@ final class WatchLayout extends FrameLayout {
 
                 @Override
                 public void updateDrawState(android.text.TextPaint paint) {
-                    paint.setColor(Ui.ACCENT);
+                    paint.setColor(Ui.LINK);
                     paint.setUnderlineText(false);
                 }
             }, m.start(), m.end(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1421,16 +1430,24 @@ final class WatchLayout extends FrameLayout {
 
     // ------------------------------------------------------------------ layout and motion
 
-    private float miniHeight() {
-        return Ui.dp(MINI_HEIGHT_DP);
+    private static final float MINI_MARGIN_DP = 12;
+
+    /** The floating mini window: about half the screen's width, 16:9. */
+    private float miniWidth() {
+        int w = getWidth();
+        return Math.max(Ui.dp(180), Math.min(Ui.dp(320), w * 0.5f));
     }
 
-    private float miniWidth() {
-        return miniHeight() * 16f / 9f;
+    private float miniHeight() {
+        return miniWidth() * 9f / 16f;
+    }
+
+    private float miniLeft() {
+        return getWidth() - Ui.dp(MINI_MARGIN_DP) - miniWidth();
     }
 
     private float miniTop() {
-        return getHeight() - bottomInset - miniHeight();
+        return getHeight() - bottomInset - Ui.dp(MINI_MARGIN_DP) - miniHeight();
     }
 
     private int playerHeight(int width, int height) {
@@ -1453,7 +1470,6 @@ final class WatchLayout extends FrameLayout {
         ((LayoutParams) comments.getLayoutParams()).topMargin = ph;
         ((LayoutParams) chat.getLayoutParams()).topMargin = ph;
         ((LayoutParams) glow.getLayoutParams()).topMargin = ph;
-        miniBar.setPadding(Math.round(miniWidth()) + Ui.dp(12), 0, 0, 0);
         super.onMeasure(w, h);
     }
 
@@ -1476,7 +1492,7 @@ final class WatchLayout extends FrameLayout {
         float p = pip || fullscreen ? 0f : progress;
         float ph = playerFrame.getHeight();
         float scale = 1f + (miniWidth() / w - 1f) * p;
-        // The player keeps its 16:9 shape; in mini it is exactly as tall as the bar.
+        // The player keeps its 16:9 shape and lands on the mini window.
         float scaleY = ph <= 0 ? scale : 1f + (miniHeight() / ph - 1f) * p;
         float y = p * miniTop();
         playerFrame.setPivotX(0);
@@ -1484,6 +1500,11 @@ final class WatchLayout extends FrameLayout {
         playerFrame.setScaleX(scale);
         playerFrame.setScaleY(scaleY);
         playerFrame.setTranslationY(y);
+        if (!dragging || !horizontal) {
+            playerFrame.setTranslationX(p * miniLeft());
+        }
+        playerFrame.invalidateOutline();
+        playerFrame.setElevation(p > 0.5f ? Ui.dp(6) : 0);
 
         details.setTranslationY(y + ph * scaleY - ph);
         details.setAlpha(clamp(1f - p * 2.4f));
@@ -1516,9 +1537,20 @@ final class WatchLayout extends FrameLayout {
         scrim.setAlpha(clamp(1f - p * 1.15f));
         scrim.setVisibility(p >= 0.999f ? GONE : VISIBLE);
 
+        LayoutParams ml = (LayoutParams) miniBar.getLayoutParams();
+        int mw = Math.round(miniWidth()), mh = Math.round(miniHeight());
+        if (ml.width != mw || ml.height != mh) {
+            ml.width = mw;
+            ml.height = mh;
+            miniBar.setLayoutParams(ml);
+        }
         miniBar.setTranslationY(miniTop());
-        miniBar.setAlpha(clamp((p - 0.5f) / 0.5f));
-        miniBar.setVisibility(p <= 0.5f ? INVISIBLE : VISIBLE);
+        if (!dragging || !horizontal) {
+            miniBar.setTranslationX(miniLeft());
+        }
+        miniBar.setElevation(Ui.dp(7));
+        miniBar.setAlpha(clamp((p - 0.8f) / 0.2f));
+        miniBar.setVisibility(p <= 0.8f ? INVISIBLE : VISIBLE);
 
         player.setCompact(pip || p > 0.5f);
         controls.setCompact(pip || p > 0.5f);
@@ -1569,7 +1601,9 @@ final class WatchLayout extends FrameLayout {
     /** Is the point on the player (expanded) or on the mini bar outside its buttons? */
     private boolean onHandle(float x, float y) {
         if (progress > 0.5f) {
-            return y >= miniTop() && y <= miniTop() + miniHeight() && x < getWidth() - Ui.dp(100);
+            boolean inside = x >= miniLeft() && x <= miniLeft() + miniWidth() && y >= miniTop() && y <= miniTop() + miniHeight();
+            boolean onButton = y < miniTop() + Ui.dp(44) && (x < miniLeft() + Ui.dp(44) || x > miniLeft() + miniWidth() - Ui.dp(44));
+            return inside && !onButton;
         }
         return y <= playerFrame.getHeight();
     }
@@ -1609,6 +1643,13 @@ final class WatchLayout extends FrameLayout {
                 drag = DRAG_NONE;
                 // In fullscreen the sides belong to the brightness and volume swipes.
                 tracking = fullscreen ? !controls.ownsSwipeAt(downX) : onHandle(downX, downY);
+                // Expanded, the page itself can be pulled down at its top to shrink the video,
+                // as on YouTube.
+                downOnPage = !tracking && !fullscreen && progress < 0.5f && downY > playerFrame.getHeight()
+                        && !comments.isShowing() && !chat.isShowing();
+                if (downOnPage) {
+                    tracking = true;
+                }
                 if (tracking) {
                     cancelAnimation();
                     if (velocity == null) {
@@ -1630,6 +1671,16 @@ final class WatchLayout extends FrameLayout {
                 boolean vertical = Math.abs(dy) > slop && Math.abs(dy) > Math.abs(dx) * 1.3f;
                 if (!vertical) {
                     return false;
+                }
+                if (downOnPage) {
+                    // Only a pull down while the list is at its top; otherwise the list scrolls.
+                    if (dy < 0 || !details.atTop()) {
+                        tracking = false;
+                        return false;
+                    }
+                    drag = DRAG_SHRINK;
+                    dragging = true;
+                    return true;
                 }
                 if (fullscreen) {
                     // Fullscreen: only a downward swipe is ours (leave fullscreen).
@@ -1680,8 +1731,8 @@ final class WatchLayout extends FrameLayout {
                     playerFrame.setPivotY(playerFrame.getHeight() / 2f);
                 } else if (dragging) {
                     if (horizontal) {
-                        playerFrame.setTranslationX(dx);
-                        miniBar.setTranslationX(dx);
+                        playerFrame.setTranslationX(miniLeft() + dx);
+                        miniBar.setTranslationX(miniLeft() + dx);
                         float fade = 1f - Math.min(1f, Math.abs(dx) / (getWidth() * 0.6f));
                         playerFrame.setAlpha(fade);
                         miniBar.setAlpha(fade);
@@ -1714,15 +1765,15 @@ final class WatchLayout extends FrameLayout {
                 } else if (horizontal) {
                     boolean dismiss = !cancelled && (Math.abs(dx) > getWidth() / 3f || Math.abs(vx) > flingVelocity);
                     if (dismiss) {
-                        float to = Math.signum(dx == 0 ? vx : dx) * getWidth();
+                        float to = miniLeft() + Math.signum(dx == 0 ? vx : dx) * getWidth();
                         playerFrame.animate().translationX(to).alpha(0f).setDuration(Ui.FAST).start();
                         miniBar.animate().translationX(to).alpha(0f).setDuration(Ui.FAST).withEndAction(() -> {
                             close();
                             playerFrame.setAlpha(1f);
                         }).start();
                     } else {
-                        playerFrame.animate().translationX(0).alpha(1f).setDuration(Ui.FAST).start();
-                        miniBar.animate().translationX(0).alpha(1f).setDuration(Ui.FAST).start();
+                        playerFrame.animate().translationX(miniLeft()).alpha(1f).setDuration(Ui.FAST).start();
+                        miniBar.animate().translationX(miniLeft()).alpha(1f).setDuration(Ui.FAST).start();
                     }
                 } else if (Math.abs(vy) > flingVelocity) {
                     animateTo(vy > 0 ? 1f : 0f, vy);

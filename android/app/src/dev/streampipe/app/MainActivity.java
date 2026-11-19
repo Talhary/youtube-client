@@ -147,6 +147,7 @@ public final class MainActivity extends Activity
         player.preferredRate = prefs().getFloat("rate", 1f);
         player.audioOnly = prefs().getBoolean("audioOnly", false);
         player.stableVolume = prefs().getBoolean("stable", false);
+        PlayerControls.swipeControls = prefs().getBoolean("swipeControls", false);
         player.preferredCaption = prefs().getString("captionLang", "");
         player.setDirect(directPlayer());
         Resume.init(this);
@@ -464,9 +465,13 @@ public final class MainActivity extends Activity
             old.view.setVisibility(View.GONE);
             old.onHidden();
         }
-        // Shorts and a playing video would talk over each other.
+        // Shorts and a playing video would talk over each other; as on YouTube, the mini
+        // player steps aside while Shorts are on screen and comes back on the other tabs.
         if (!musicMode && i == TAB_SHORTS && watch.isOpen() && player.playing) {
             player.command("pause");
+        }
+        if (watch.isOpen() && !watch.isExpanded()) {
+            watch.setVisibility(!musicMode && i == TAB_SHORTS ? View.INVISIBLE : View.VISIBLE);
         }
         next.view.animate().cancel();
         next.view.setTranslationX(0);
@@ -708,7 +713,8 @@ public final class MainActivity extends Activity
             watchOpen = open;
             // Leave room at the bottom of the lists for the mini bar.
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) content.getLayoutParams();
-            lp.bottomMargin = Ui.dp(NAV_HEIGHT_DP) + (open ? Ui.dp(58) : 0);
+            // The mini player floats over the lists, as on YouTube: no room is kept for it.
+            lp.bottomMargin = Ui.dp(NAV_HEIGHT_DP);
             content.setLayoutParams(lp);
         }
     }

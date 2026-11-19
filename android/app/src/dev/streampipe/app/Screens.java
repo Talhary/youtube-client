@@ -1024,6 +1024,13 @@ final class SettingsScreen extends Screen {
             prefs.edit().putBoolean("prefetch", on).apply();
             Core.get().prefetch = on && nav.directPlayer();
         });
+        Switch swipes = toggle(c, col, "Swipe controls in fullscreen",
+                "Swipe up and down on the left side for brightness and on the right side for volume");
+        swipes.setChecked(prefs.getBoolean("swipeControls", false));
+        swipes.setOnCheckedChangeListener((b, on) -> {
+            prefs.edit().putBoolean("swipeControls", on).apply();
+            PlayerControls.swipeControls = on;
+        });
         Switch stable = toggle(c, col, "Stable volume", "Evens out loud and quiet parts (direct player)");
         stable.setChecked(prefs.getBoolean("stable", false));
         stable.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("stable", on).apply());

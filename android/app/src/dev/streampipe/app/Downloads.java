@@ -120,14 +120,144 @@ final class Downloads {
     // ------------------------------------------------------------------ commands
 
     /** Ask what to download: sound only, or the picture up to a chosen quality. */
-    void choose(Context c, final Core.Item video) {
-        final int[] heights = {0, 360, 480, 720, 1080, 1440, 2160};
-        String[] labels = {"Audio only (m4a)", "Video 360p", "Video 480p", "Video 720p", "Video 1080p", "Video 1440p", "Video 2160p (4K)"};
-        new android.app.AlertDialog.Builder(c)
-                .setTitle("Download")
-                .setItems(labels, (d, which) -> start(video, heights[which]))
-                .setNegativeButton("Cancel", null)
-                .show();
+    /**
+     * Ask what to download, listing what this video really has: every picture quality with
+     * its size (picture plus sound), codec, frame rate, bitrate and file type, and the sound
+     * on its own; with the video's length and the free space on the phone.
+     */
+    void choose(final Context c, final Core.Item video) {
+        choose(c, video, false);
+    }
+
+    /** As above; `vertical` (Shorts): qualities are named by the picture's short side, as YouTube does. */
+    void choose(final Context c, final Core.Item video, final boolean vertical) {
+        final Sheet sheet = new Sheet(c, "Download quality").boxed();
+        sheet.note("Reading this video's formats\u2026");
+        sheet.show();
+        Core.get().call((e, err) -> {
+            JSONObject st = e == null ? null : e.optJSONObject("ok");
+            sheet.clear();
+            if (st == null || st.optJSONObject("audio") == null) {
+                // The formats could not be read: offer the plain choices.
+                sheet.note("The formats could not be read" + (err == null ? "" : " (" + err + ")") + ". Sizes are unknown.");
+                final int[] heights = {0, 360, 480, 720, 1080, 1440, 2160};
+                String[] labels = {"Audio only", "360p", "480p", "720p", "1080p", "1440p", "2160p (4K)"};
+                for (int i = 0; i < heights.length; i++) {
+                    final int h = heights[i];
+                    sheet.add(h == 0 ? R.drawable.ic_headset : R.drawable.ic_download_outline, labels[i], () -> start(video, h));
+                }
+                return;
+            }
+            int duration = st.optInt("duration");
+            JSONObject audio = st.optJSONObject("audio");
+            long audioBytes = bytes(audio, duration);
+            long free = freeSpace();
+            sheet.note(Ui.join(video.title == null || video.title.isEmpty() ? null : video.title,
+                    duration > 0 ? "Length " + Ui.duration(duration) : null,
+                    free > 0 ? size(free) + " free on this phone" : null));
+            sheet.add(R.drawable.ic_headset, "Audio only \u00B7 M4A",
+                    Ui.join(size(audioBytes), "AAC " + kbps(audio), "Sound only, plays in music players"),
+                    () -> start(video, 0));
+            for (final JSONObject f : bestPerHeight(st)) {
+                final int h = f.optInt("height");
+                int named = vertical ? shortSide(h) : h;
+                if (named <= 0) {
+                    continue;
+                }
+                int fps = f.optInt("fps", 30);
+                long videoBytes = bytes(f, duration);
+                long total = videoBytes + audioBytes;
+                String codec = f.optString("codec");
+                String label = named + "p" + (fps > 30 ? String.valueOf(fps) : "") + quality(named);
+                String hint = Ui.join(size(total) + (free > 0 && total > free ? " (more than the free space)" : ""),
+                        codecName(codec) + " + AAC",
+                        fps + " fps",
+                        mbps(f),
+                        codec.equals("vp9") ? "WebM" : "MP4");
+                sheet.add(R.drawable.ic_download_outline, label, hint, () -> start(video, h));
+            }
+        }, "streams", "id", video.id);
+    }
+
+    /** One picture stream per height (highest frame rate; H.264 first, it plays everywhere). */
+    private static List<JSONObject> bestPerHeight(JSONObject st) {
+        java.util.TreeMap<Integer, JSONObject> best = new java.util.TreeMap<>(java.util.Collections.reverseOrder());
+        org.json.JSONArray list = st.optJSONArray("video");
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject f = list.optJSONObject(i);
+            if (f == null || f.optInt("height") <= 0) {
+                continue;
+            }
+            JSONObject old = best.get(f.optInt("height"));
+            if (old == null || rank(f) > rank(old)) {
+                best.put(f.optInt("height"), f);
+            }
+        }
+        return new ArrayList<>(best.values());
+    }
+
+    /** A vertical picture's long side to the quality YouTube names it by (1920 → 1080p); 0 if odd. */
+    private static int shortSide(int longSide) {
+        switch (longSide) {
+            case 3840: return 2160;
+            case 2560: return 1440;
+            case 1920: return 1080;
+            case 1280: return 720;
+            case 854: return 480;
+            case 640: return 360;
+            case 426: return 240;
+            case 256: return 144;
+            default: return 0;
+        }
+    }
+
+    private static int rank(JSONObject f) {
+        String c = f.optString("codec");
+        return f.optInt("fps", 30) * 10 + (c.equals("h264") ? 3 : c.equals("vp9") ? 2 : 1);
+    }
+
+    /** The stream's size, or an estimate from its bitrate and the video's length. */
+    private static long bytes(JSONObject f, int duration) {
+        if (f == null) {
+            return 0;
+        }
+        long size = f.isNull("size") ? 0 : f.optLong("size", 0);
+        return size > 0 ? size : (long) f.optLong("bitrate", 0) * duration / 8;
+    }
+
+    private static String kbps(JSONObject f) {
+        long b = f == null ? 0 : f.optLong("bitrate", 0);
+        return b > 0 ? Math.round(b / 1000.0) + " kbps" : "";
+    }
+
+    private static String mbps(JSONObject f) {
+        long b = f.optLong("bitrate", 0);
+        return b <= 0 ? null : b >= 1_000_000 ? String.format(Locale.US, "%.1f Mbps", b / 1e6) : Math.round(b / 1000.0) + " kbps";
+    }
+
+    private static String codecName(String codec) {
+        switch (codec) {
+            case "h264":
+                return "H.264";
+            case "vp9":
+                return "VP9";
+            case "av1":
+                return "AV1";
+            default:
+                return codec.toUpperCase(Locale.US);
+        }
+    }
+
+    private static String quality(int h) {
+        return h >= 2160 ? "  4K" : h >= 1440 ? "  QHD" : h >= 720 ? "  HD" : "";
+    }
+
+    private static long freeSpace() {
+        try {
+            return new android.os.StatFs(android.os.Environment.getExternalStorageDirectory().getPath()).getAvailableBytes();
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** Ask how to download every video of a playlist, then queue them all. */

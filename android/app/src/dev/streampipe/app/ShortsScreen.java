@@ -57,6 +57,7 @@ final class ShortsScreen extends Screen implements Exo.Events {
     ShortsScreen(Context c, Nav nav) {
         this.c = c;
         this.nav = nav;
+        seen = loadSeen();
         exo = new Exo(c, this);
         exo.setFill(true);
         FrameLayout root = new FrameLayout(c);
@@ -120,6 +121,7 @@ final class ShortsScreen extends Screen implements Exo.Events {
         message.setVisibility(View.GONE);
         busy.setVisibility(View.VISIBLE);
         Object[] args = seed == null ? new Object[] {"op", "feed"} : new Object[] {"op", "feed", "id", seed};
+        keepId = seed;
         seed = null;
         Core.get().call((e, err) -> {
             if (mine != generation) {
@@ -144,6 +146,15 @@ final class ShortsScreen extends Screen implements Exo.Events {
     }
 
     private void add(JSONObject page) {
+        int before = items.size();
+        addFrom(page, true);
+        if (items.size() == before) {
+            // Everything was seen already: better a repeat than an empty screen.
+            addFrom(page, false);
+        }
+    }
+
+    private void addFrom(JSONObject page, boolean skipSeen) {
         JSONArray list = page.optJSONArray("items");
         for (int i = 0; list != null && i < list.length(); i++) {
             JSONObject o = list.optJSONObject(i);
@@ -155,7 +166,8 @@ final class ShortsScreen extends Screen implements Exo.Events {
             for (Short s : items) {
                 dup |= s.id.equals(id);
             }
-            if (dup || id.isEmpty()) {
+            // Already watched here: YouTube may offer it again before its history catches up.
+            if (dup || id.isEmpty() || (skipSeen && seen.contains(id) && !id.equals(keepId))) {
                 continue;
             }
             Short s = new Short();
@@ -327,14 +339,67 @@ final class ShortsScreen extends Screen implements Exo.Events {
         }
     }
 
+    /** The Short on screen counts as watched: in this app's list and in YouTube's history. */
+    private void report(double at, double total) {
+        Short s = current();
+        if (s == null) {
+            return;
+        }
+        if (at >= 3 && seen.add(s.id)) {
+            saveSeen();
+        }
+        if (!Core.get().isSignedIn() || c.getSharedPreferences("shell", Context.MODE_PRIVATE).getBoolean("historyPaused", false)) {
+            return;
+        }
+        // Once after three seconds (YouTube counts Shorts views early), then again at the
+        // end of each loop.
+        boolean first = !s.id.equals(reportedId) && at >= 3;
+        boolean end = s.id.equals(reportedId) && total > 0 && at >= total - 1.5 && at - reportedAt >= 2;
+        if (first || end) {
+            reportedId = s.id;
+            reportedAt = at;
+            Core.get().send("watched", "id", s.id, "seconds", (int) Math.round(at), "total", (int) Math.round(total));
+        }
+    }
+
+    private String reportedId;
+    private double reportedAt;
+    private String keepId;
+    /** Shorts watched here lately (newest last), skipped when the feed offers them again. */
+    private final java.util.LinkedHashSet<String> seen;
+
+    private java.util.LinkedHashSet<String> loadSeen() {
+        java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+        String saved = c.getSharedPreferences("shell", Context.MODE_PRIVATE).getString("shortsSeen", "");
+        for (String id : saved.split(",")) {
+            if (!id.isEmpty()) {
+                set.add(id);
+            }
+        }
+        return set;
+    }
+
+    private void saveSeen() {
+        while (seen.size() > 500) {
+            seen.remove(seen.iterator().next());
+        }
+        c.getSharedPreferences("shell", Context.MODE_PRIVATE).edit().putString("shortsSeen", android.text.TextUtils.join(",", seen)).apply();
+    }
+
     @Override
     public void onEnded() {
+        Short s = current();
+        if (s != null) {
+            // A new loop: the next end is reported again.
+            reportedAt = 0;
+        }
         // Shorts loop, as on YouTube.
         exo.setPlaying(true);
     }
 
     @Override
     public void onProgress(double at, double total, double buffered, boolean paused, boolean waiting) {
+        report(at, total);
         Page p = pages.get(index);
         if (p != null && total > 0) {
             p.progress.setScaleX((float) Math.max(0, Math.min(1, at / total)));
@@ -441,6 +506,9 @@ final class ShortsScreen extends Screen implements Exo.Events {
             View save = action(c, R.drawable.ic_save_outline, "Save");
             save.setOnClickListener(v -> ItemMenu.saveToPlaylist(c, item.id));
             actions.addView(save);
+            View download = action(c, R.drawable.ic_download_outline, "Download");
+            download.setOnClickListener(v -> Downloads.get().choose(c, asItem(item), true));
+            actions.addView(download);
             View share = action(c, R.drawable.ic_share_outline, "Share");
             share.setOnClickListener(v -> ItemMenu.share(c, asItem(item), 0));
             actions.addView(share);
