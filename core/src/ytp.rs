@@ -426,6 +426,15 @@ pub fn from_library(j: &Value) -> Result<ResolvedStreams, String> {
         ),
     };
     if streams.is_empty() {
+        // Say why each format was left out, so a change on YouTube's side is visible in the log.
+        let why: Vec<String> = j.get("formats").and_then(Value::as_array).into_iter().flatten().take(40).map(|f| {
+            let s = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            format!("{}:{}:{}{}{}", s("kind"), s("codecs"), s("res"),
+                if f.get("drm").and_then(Value::as_bool).unwrap_or(false) { ":drm" } else { "" },
+                if s("url").is_empty() { ":no-url" } else { "" })
+        }).collect();
+        tracing::warn!("ytp: client {} gave {} formats, none playable: {}", text("client"),
+            j.get("formats").and_then(serde_json::Value::as_array).map(|a| a.len()).unwrap_or(0), why.join(" "));
         return Err("no playable streams".into());
     }
     Ok(streams)

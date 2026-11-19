@@ -139,12 +139,21 @@ pub struct CommentCard {
     pub by_owner: bool,
     /// Marked with a heart by the video's channel.
     pub hearted: bool,
+    /// Loads this comment's replies (YouTube's page API handle).
+    #[serde(default)]
+    pub replies_token: Option<String>,
+    /// Posts a reply to this comment's thread (signed in only).
+    #[serde(default)]
+    pub reply_params: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CommentPage {
     pub items: Vec<CommentCard>,
     pub next: Option<Cursor>,
+    /// Posts a new comment on the video (signed in only).
+    #[serde(default)]
+    pub create_params: Option<String>,
 }
 
 /// Pick the thumbnail closest to `target` px wide without going far under it.

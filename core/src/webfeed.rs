@@ -6,6 +6,7 @@
 //! available on Android. Further screens come from the same continuation requests the
 //! page itself makes when it is scrolled ([`more`]).
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -423,6 +424,8 @@ pub struct CommentsMore {
     token: String,
     context: Value,
     auth_user: String,
+    /// A reply thread (its comments are replies).
+    replies: bool,
 }
 
 /// "1.2K" → 1200.
@@ -463,12 +466,78 @@ fn comments_token(data: &Value) -> Option<String> {
 /// Comments out of a page API answer: top-level comments in order, plus the handle for
 /// the next page (reply threads have their own handles, which are not followed).
 fn read_comments(data: &Value) -> (Vec<CommentCard>, Option<String>) {
-    fn walk(v: &Value, depth: usize, out: &mut Vec<CommentCard>, next: &mut Option<String>) {
+    read_comments_at(data, false)
+}
+
+/// As [`read_comments`]; `replies` reads a reply thread's answer (its comments are replies).
+fn read_comments_at(data: &Value, replies: bool) -> (Vec<CommentCard>, Option<String>) {
+    let (mut out, next) = read_comment_entities(data, replies);
+    // Each thread holds its replies' handle and the key of the toolbar whose payload holds
+    // the handle for replying (present when signed in).
+    let mut threads: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    find_all(data, "commentThreadRenderer", &mut |t| {
+        let Some(vm) = t.pointer("/commentViewModel/commentViewModel") else { return };
+        let Some(id) = vm.get("commentId").and_then(Value::as_str) else { return };
+        let mut token = None;
+        if let Some(r) = t.get("replies") {
+            find_all(r, "token", &mut |x| {
+                if token.is_none() {
+                    token = x.as_str().map(str::to_string);
+                }
+            });
+        }
+        let surface = vm.get("toolbarSurfaceKey").and_then(Value::as_str).map(str::to_string);
+        threads.insert(id.to_string(), (token, surface));
+    });
+    let mut payloads: HashMap<String, &Value> = HashMap::new();
+    if let Some(m) = data.pointer("/frameworkUpdates/entityBatchUpdate/mutations").and_then(Value::as_array) {
+        for x in m {
+            if let (Some(k), Some(p)) = (x.get("entityKey").and_then(Value::as_str), x.get("payload")) {
+                payloads.insert(k.to_string(), p);
+            }
+        }
+    }
+    // Replies in a reply answer carry their own toolbar keys too.
+    let mut reply_keys: HashMap<String, String> = HashMap::new();
+    find_all(data, "commentViewModel", &mut |vm| {
+        let vm = vm.get("commentViewModel").unwrap_or(vm);
+        if let (Some(id), Some(k)) = (vm.get("commentId").and_then(Value::as_str), vm.get("toolbarSurfaceKey").and_then(Value::as_str)) {
+            reply_keys.insert(id.to_string(), k.to_string());
+        }
+    });
+    for c in out.iter_mut() {
+        let (token, surface) = threads.get(&c.id).cloned().unwrap_or((None, None));
+        c.replies_token = token;
+        let key = surface.or_else(|| reply_keys.get(&c.id).cloned());
+        if let Some(p) = key.and_then(|k| payloads.get(&k).copied()) {
+            find_all(p, "createReplyParams", &mut |x| {
+                if c.reply_params.is_none() {
+                    c.reply_params = x.as_str().map(str::to_string);
+                }
+            });
+        }
+    }
+    (out, next)
+}
+
+/// The handle for posting a new comment, from the first page of comments (signed in).
+fn create_comment_params(data: &Value) -> Option<String> {
+    let mut found = None;
+    find_all(data, "createCommentParams", &mut |x| {
+        if found.is_none() {
+            found = x.as_str().map(str::to_string);
+        }
+    });
+    found
+}
+
+fn read_comment_entities(data: &Value, replies: bool) -> (Vec<CommentCard>, Option<String>) {
+    fn walk(v: &Value, depth: usize, replies: bool, out: &mut Vec<CommentCard>, next: &mut Option<String>) {
         if depth > 40 {
             return;
         }
         match v {
-            Value::Array(a) => a.iter().for_each(|c| walk(c, depth + 1, out, next)),
+            Value::Array(a) => a.iter().for_each(|c| walk(c, depth + 1, replies, out, next)),
             Value::Object(o) => {
                 for (k, child) in o {
                     match k.as_str() {
@@ -483,7 +552,8 @@ fn read_comments(data: &Value) -> (Vec<CommentCard>, Option<String>) {
                             let level = props.and_then(|p| p.get("replyLevel")).and_then(Value::as_u64).unwrap_or(0);
                             let id = get(props, "commentId");
                             let body = props.and_then(|p| p.get("content")).and_then(text);
-                            if let (0, Some(id), Some(body)) = (level, id, body) {
+                            let wanted = if replies { level > 0 } else { level == 0 };
+                            if let (true, Some(id), Some(body)) = (wanted, id, body) {
                                 out.push(CommentCard {
                                     id,
                                     author: get(author, "displayName"),
@@ -496,6 +566,8 @@ fn read_comments(data: &Value) -> (Vec<CommentCard>, Option<String>) {
                                     pinned: false,
                                     by_owner: author.and_then(|a| a.get("isCreator")).and_then(Value::as_bool).unwrap_or(false),
                                     hearted: false,
+                                    replies_token: None,
+                                    reply_params: None,
                                 });
                             }
                         }
@@ -506,7 +578,7 @@ fn read_comments(data: &Value) -> (Vec<CommentCard>, Option<String>) {
                                 *next = Some(t.to_string());
                             }
                         }
-                        _ => walk(child, depth + 1, out, next),
+                        _ => walk(child, depth + 1, replies, out, next),
                     }
                 }
             }
@@ -515,7 +587,7 @@ fn read_comments(data: &Value) -> (Vec<CommentCard>, Option<String>) {
     }
     let mut out = Vec::new();
     let mut next = None;
-    walk(data, 0, &mut out, &mut next);
+    walk(data, 0, replies, &mut out, &mut next);
     (out, next)
 }
 
@@ -525,6 +597,15 @@ pub async fn comments_more(
     cookie: Option<&str>,
     m: &CommentsMore,
 ) -> Result<(Vec<CommentCard>, Option<CommentsMore>), String> {
+    comments_more_with(http, cookie, m).await.map(|(items, more, _)| (items, more))
+}
+
+/// As [`comments_more`], also returning the handle for posting a new comment.
+pub async fn comments_more_with(
+    http: &reqwest::Client,
+    cookie: Option<&str>,
+    m: &CommentsMore,
+) -> Result<(Vec<CommentCard>, Option<CommentsMore>, Option<String>), String> {
     let body = serde_json::json!({"context": m.context, "continuation": m.token});
     let mut req = http
         .post("https://www.youtube.com/youtubei/v1/next?prettyPrint=false")
@@ -545,9 +626,40 @@ pub async fn comments_more(
         return Err(format!("YouTube answered HTTP {}", resp.status().as_u16()));
     }
     let data: Value = resp.json().await.map_err(|e| format!("unexpected answer from YouTube: {e}"))?;
-    let (items, token) = read_comments(&data);
+    let (items, token) = read_comments_at(&data, m.replies);
     let next = token.filter(|_| !items.is_empty()).map(|token| CommentsMore { token, ..m.clone() });
-    Ok((items, next))
+    Ok((items, next, create_comment_params(&data)))
+}
+
+/// A comment's replies, from the thread's handle (and more of them from the answer's own).
+pub async fn comment_replies(
+    http: &reqwest::Client,
+    cookie: Option<&str>,
+    token: &str,
+) -> Result<(Vec<CommentCard>, Option<CommentsMore>), String> {
+    let m = CommentsMore {
+        token: token.to_string(),
+        context: serde_json::json!({"client": {"clientName": "WEB", "clientVersion": WEB_VERSION, "hl": "en", "gl": "US"}}),
+        auth_user: "0".into(),
+        replies: true,
+    };
+    comments_more(http, cookie, &m).await
+}
+
+/// Post a new comment (`reply` false, with the video's create handle) or a reply (with the
+/// thread's reply handle).
+pub async fn post_comment(http: &reqwest::Client, cookie: &str, params: &str, text: &str, reply: bool) -> Result<Value, String> {
+    let (path, body) = if reply {
+        ("comment/create_comment_reply", serde_json::json!({"commentText": text, "createReplyParams": params}))
+    } else {
+        ("comment/create_comment", serde_json::json!({"commentText": text, "createCommentParams": params}))
+    };
+    let answer = post_json(http, cookie, path, body).await?;
+    // YouTube answers 200 with an error message inside when it refuses the comment.
+    if answer.get("actionResult").and_then(|r| r.get("status")).and_then(Value::as_str) == Some("STATUS_FAILED") {
+        return Err("YouTube did not accept the comment".into());
+    }
+    Ok(serde_json::json!({}))
 }
 
 /// The first page of a video's comments, read from its watch page and YouTube's page API.
@@ -556,7 +668,7 @@ pub async fn comments(
     http: &reqwest::Client,
     cookie: Option<&str>,
     id: &str,
-) -> Result<(Vec<CommentCard>, Option<CommentsMore>), String> {
+) -> Result<(Vec<CommentCard>, Option<CommentsMore>, Option<String>), String> {
     let mut req = http
         .get(format!("https://www.youtube.com/watch?v={id}"))
         .header(reqwest::header::USER_AGENT, USER_AGENT)
@@ -573,13 +685,13 @@ pub async fn comments(
     let data = initial_data(&html).ok_or("YouTube's page had no video data")?;
     // A page without a comment section has comments turned off: that is an empty list.
     let Some(token) = comments_token(&data) else {
-        return Ok((Vec::new(), None));
+        return Ok((Vec::new(), None, None));
     };
     let context = json_after(&html, "\"INNERTUBE_CONTEXT\":").ok_or("YouTube's page had no client description")?;
     let auth_user = json_after(&html, "\"SESSION_INDEX\":")
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "0".into());
-    comments_more(http, cookie, &CommentsMore { token, context, auth_user }).await
+    comments_more_with(http, cookie, &CommentsMore { token, context, auth_user, replies: false }).await
 }
 
 /// First value stored under `key`, searching depth-first.

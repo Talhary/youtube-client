@@ -59,6 +59,11 @@ pub enum Command {
     /// Shorts: `op` "feed" (optional `id` to start from), "more" (`token`), "info" (`id`,
     /// `params`) or "shelf" (the home page's Shorts). Answered as an action.
     Shorts { req: ReqId, op: String, id: Option<String>, params: Option<String>, token: Option<String> },
+    /// A comment's replies, from its `replies_token`.
+    CommentReplies { req: ReqId, token: String },
+    /// Post a comment (`reply` false: `params` is the page's create handle) or a reply
+    /// (`params` is the thread's reply handle). Answered as an action.
+    PostComment { req: ReqId, params: String, text: String, reply: bool },
     /// Tell YouTube a video in the home feed is not interesting.
     NotInterested { req: ReqId, id: String },
     /// Videos on screen in a list: resolve their streams and read their details now, so
@@ -1068,7 +1073,7 @@ fn web_comment_page(st: &State, items: Vec<CommentCard>, more: Option<crate::web
         map.insert(id, m);
         Cursor(id)
     });
-    CommentPage { items, next }
+    CommentPage { items, next, create_params: None }
 }
 
 /// The next screen of a web list (single use, like the extractor's cursors).
@@ -1448,19 +1453,35 @@ async fn handle(st: Arc<State>, cmd: Command) {
             emit(Event::Video { req, result })
         }
         Command::Comments { req, id } => {
-            // The regular extractor cannot read every watch page; YouTube's own page API is
-            // the second source.
-            let result = match st.api.comments(&id).await {
-                Ok(page) => Ok(page),
+            // YouTube's own page API first: it carries the replies' handles and, signed in,
+            // the handles for commenting and replying. The extractor is the second source.
+            let cookie = session_cookie(&st);
+            let result = match crate::webfeed::comments(&st.http, cookie.as_deref(), &id).await {
+                Ok((items, more, create)) => {
+                    let mut page = web_comment_page(&st, items, more);
+                    page.create_params = create;
+                    Ok(page)
+                }
                 Err(e) => {
-                    tracing::info!("comments for {id} from the page API (extractor: {e})");
-                    let cookie = session_cookie(&st);
-                    crate::webfeed::comments(&st.http, cookie.as_deref(), &id)
-                        .await
-                        .map(|(items, more)| web_comment_page(&st, items, more))
+                    tracing::info!("comments for {id} from the extractor (page API: {e})");
+                    s(st.api.comments(&id).await)
                 }
             };
             emit(Event::Comments { req, result })
+        }
+        Command::CommentReplies { req, token } => {
+            let cookie = session_cookie(&st);
+            let result = crate::webfeed::comment_replies(&st.http, cookie.as_deref(), &token)
+                .await
+                .map(|(items, more)| web_comment_page(&st, items, more));
+            emit(Event::Comments { req, result })
+        }
+        Command::PostComment { req, params, text, reply } => {
+            let result = match session_cookie(&st) {
+                None => Err(ApiError::NeedsLogin.to_string()),
+                Some(cookie) => crate::webfeed::post_comment(&st.http, &cookie, &params, &text, reply).await,
+            };
+            emit(Event::Action { req, result })
         }
         Command::Watched { id, seconds, total } => {
             if let Some(cookie) = session_cookie(&st) {

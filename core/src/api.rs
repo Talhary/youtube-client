@@ -133,12 +133,15 @@ impl Api {
                 pinned: c.pinned,
                 by_owner: c.by_owner,
                 hearted: c.hearted,
+                replies_token: None,
+                reply_params: None,
             })
             .collect();
         let more = !p.is_exhausted();
         CommentPage {
             items,
             next: self.park(Pager::Comments(p), more),
+            create_params: None,
         }
     }
 

@@ -152,6 +152,14 @@ enum UiCmd {
     Video { req: u64, id: String },
     Comments { req: u64, id: String },
     MoreComments { req: u64, cursor: u64 },
+    CommentReplies { req: u64, token: String },
+    PostComment {
+        req: u64,
+        params: String,
+        text: String,
+        #[serde(default)]
+        reply: bool,
+    },
     Streams { req: u64, id: String },
     Watched {
         id: String,
@@ -222,6 +230,8 @@ fn to_command(c: UiCmd) -> Command {
         UiCmd::Video { req, id } => Command::Video { req, id },
         UiCmd::Comments { req, id } => Command::Comments { req, id },
         UiCmd::MoreComments { req, cursor } => Command::MoreComments { req, cursor: Cursor(cursor) },
+        UiCmd::CommentReplies { req, token } => Command::CommentReplies { req, token },
+        UiCmd::PostComment { req, params, text, reply } => Command::PostComment { req, params, text, reply },
         UiCmd::Streams { req, id } => Command::Streams { req, id },
         UiCmd::Watched { id, seconds, total } => Command::Watched { id, seconds, total },
         UiCmd::Rating { req, id } => Command::Rating { req, id },
@@ -484,6 +494,8 @@ struct YtParser {
     cookies: parking_lot::Mutex<Option<String>>,
     /// The public path was refused last time: ask the signed-in one first.
     cookie_first: std::sync::atomic::AtomicBool,
+    /// The signed-in mobile-web client answered with nothing playable: leave it out (flag 4).
+    no_mweb: std::sync::atomic::AtomicBool,
 }
 
 impl YtParser {
@@ -508,6 +520,7 @@ impl YtParser {
                 cache: CString::new(cache_dir.join("ytp").to_string_lossy().into_owned()).map_err(|e| e.to_string())?,
                 cookies: parking_lot::Mutex::new(None),
                 cookie_first: std::sync::atomic::AtomicBool::new(false),
+                no_mweb: std::sync::atomic::AtomicBool::new(false),
             })
         }
     }
@@ -544,9 +557,16 @@ impl YtParser {
         // has been refused (a connection YouTube challenges stays that way for a while).
         use std::sync::atomic::Ordering;
         let first = signed_in && self.cookie_first.load(Ordering::Relaxed);
-        // Flags: 1 = signed-in path first, 2 = skip the preview check.
-        let flags = first as libc::c_int | (fast as libc::c_int) << 1;
-        let answer = self.take(unsafe { (self.resolve)(id.as_ptr(), flags) })?;
+        // Flags: 1 = signed-in path first, 2 = skip the preview check, 4 = no mobile-web client.
+        let flags = first as libc::c_int | (fast as libc::c_int) << 1 | (self.no_mweb.load(Ordering::Relaxed) as libc::c_int) << 2;
+        let mut answer = self.take(unsafe { (self.resolve)(id.as_ptr(), flags) })?;
+        // Some sessions get formats from the mobile-web client that cannot be played, while
+        // tv still serves them: ask again without it, and leave it out from now on.
+        if answer.get("client").and_then(Value::as_str) == Some("mweb") && streampipe_core::ytp::from_library(&answer).is_err() {
+            eprintln!("yt-parser: mobile-web answer for this session is not playable; using tv from now on");
+            self.no_mweb.store(true, Ordering::Relaxed);
+            answer = self.take(unsafe { (self.resolve)(id.as_ptr(), flags | 4) })?;
+        }
         match answer.get("client").and_then(Value::as_str) {
             Some("tv") => self.cookie_first.store(true, Ordering::Relaxed),
             Some(_) => self.cookie_first.store(false, Ordering::Relaxed),
