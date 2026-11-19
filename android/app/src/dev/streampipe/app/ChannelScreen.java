@@ -55,6 +55,7 @@ final class ChannelScreen extends Screen {
             }
         });
         list.setMenu(nav, false);
+        list.setPreview(true);
         list.setHeader(header);
         list.setEmptyText("This channel has no videos.");
         list.setSource(this::load);

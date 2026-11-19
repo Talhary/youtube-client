@@ -216,8 +216,12 @@ final class FeedList extends FrameLayout {
         list.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(AbsListView view, int state) {
+                removeCallbacks(pickPreview);
                 if (state == SCROLL_STATE_IDLE) {
                     prefetchVisible();
+                    if (preview) {
+                        postDelayed(pickPreview, 450);
+                    }
                 }
             }
 
@@ -228,6 +232,93 @@ final class FeedList extends FrameLayout {
                 }
             }
         });
+    }
+
+    // ------------------------------------------------------------------ playback in feeds
+
+    /** This list plays its cards inline (Home, Subscriptions, Search, channels). */
+    private boolean preview;
+    private float touchX, touchY;
+    private long touchAt;
+
+    void setPreview(boolean on) {
+        preview = on;
+    }
+
+    /** The card under the finger, or else the one most in view, plays. */
+    private final Runnable pickPreview = this::pickPreview;
+
+    private void pickPreview() {
+        if (!preview || !isShown() || getWindowVisibility() != VISIBLE) {
+            return;
+        }
+        Row best = null;
+        float bestShown = 0;
+        Row touched = null;
+        android.graphics.Rect box = new android.graphics.Rect();
+        int[] at = new int[2];
+        list.getLocationOnScreen(at);
+        int top = at[1] + list.getPaddingTop(), bottom = at[1] + list.getHeight() - list.getPaddingBottom();
+        for (Row r : visibleRows()) {
+            if (r.thumb == null || r.item == null || r.item.type != Core.Item.VIDEO || r.item.live) {
+                continue;
+            }
+            if (!r.thumb.getGlobalVisibleRect(box)) {
+                continue;
+            }
+            int t = Math.max(box.top, top), b = Math.min(box.bottom, bottom);
+            float shown = r.thumb.getHeight() <= 0 ? 0 : Math.max(0, b - t) / (float) r.thumb.getHeight();
+            if (System.currentTimeMillis() - touchAt < 1500 && box.contains((int) touchX, (int) touchY) && shown > 0.5f) {
+                touched = r;
+            }
+            if (shown > bestShown + 0.01f) {
+                bestShown = shown;
+                best = r;
+            }
+        }
+        Row pick = touched != null ? touched : bestShown >= 0.7f ? best : null;
+        if (pick != null) {
+            FeedPreview.get(getContext()).play(pick.thumb, pick.item);
+        }
+    }
+
+    private java.util.List<Row> visibleRows() {
+        java.util.List<Row> out = new ArrayList<>();
+        for (int i = 0; i < list.getChildCount(); i++) {
+            View v = list.getChildAt(i);
+            if (v.getTag() instanceof Row) {
+                out.add((Row) v.getTag());
+            } else if (v instanceof LinearLayout) {
+                LinearLayout pair = (LinearLayout) v;
+                for (int k = 0; k < pair.getChildCount(); k++) {
+                    if (pair.getChildAt(k).getTag() instanceof Row) {
+                        out.add((Row) pair.getChildAt(k).getTag());
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent e) {
+        if (preview && e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+            // A finger resting on a card plays it, as on YouTube.
+            touchX = e.getRawX();
+            touchY = e.getRawY();
+            touchAt = System.currentTimeMillis();
+            removeCallbacks(pickPreview);
+            postDelayed(pickPreview, 350);
+        }
+        return super.dispatchTouchEvent(e);
+    }
+
+    /** Try a preview soon (the list became visible or loaded). */
+    void previewSoon() {
+        if (preview) {
+            removeCallbacks(pickPreview);
+            postDelayed(pickPreview, 700);
+        }
     }
 
     /** A view shown above the first row (set before {@link #setSource}). */
@@ -279,6 +370,7 @@ final class FeedList extends FrameLayout {
             } else {
                 // What is on screen once the first page is in.
                 list.postDelayed(FeedList.this::prefetchVisible, 800);
+                previewSoon();
                 list.setAlpha(0f);
                 list.setTranslationY(Ui.dp(14));
                 list.animate().alpha(1f).translationY(0).setDuration(Ui.MEDIUM).setInterpolator(Ui.EASE_OUT).start();
@@ -387,6 +479,8 @@ final class FeedList extends FrameLayout {
     // ------------------------------------------------------------------ rows
 
     private static final class Row {
+        FrameLayout thumb;
+        Core.Item item;
         ImageView avatar;
         ImageView image;
         TextView badge, title, line1, line2;
@@ -495,12 +589,23 @@ final class FeedList extends FrameLayout {
 
         private void bindCell(View view, final Core.Item item, int type) {
             Row r = (Row) view.getTag();
+            r.item = item;
+            // A recycled card that still holds the preview of another video lets it go.
+            if (r.thumb != null && preview && FeedPreview.get(getContext()).isIn(r.thumb)
+                    && !FeedPreview.get(getContext()).isPlaying(item)) {
+                FeedPreview.get(getContext()).stop();
+            }
             if (type == POST) {
                 bindPost(r, item);
                 view.setOnClickListener(item.attached == null ? null : v -> host.open(item.attached));
                 return;
             }
-            Images.load(r.image, item.thumb);
+            // Big cards fill the screen's width: the sharp picture follows the quick one.
+            if (type == BIG) {
+                Images.loadSharp(r.image, item.thumb);
+            } else {
+                Images.load(r.image, item.thumb);
+            }
             r.title.setText(item.title);
             if (r.watch != null) {
                 // What YouTube says, or how far it got in this app, whichever is further.
@@ -685,6 +790,7 @@ final class FeedList extends FrameLayout {
             root.setPadding(0, 0, 0, Ui.dp(20));
             RatioFrame thumb = new RatioFrame(c);
             thumb.setBackgroundColor(Ui.PANEL);
+            r.thumb = thumb;
             r.image = new ImageView(c);
             r.image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             thumb.addView(r.image, new LayoutParams(Ui.MATCH, Ui.MATCH));

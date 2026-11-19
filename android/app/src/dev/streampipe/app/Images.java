@@ -21,7 +21,8 @@ import java.util.concurrent.Executors;
 
 /** Thumbnails: memory cache, disk cache, then the network. Images fade in when they arrive. */
 final class Images {
-    private static final int MAX_SIDE = 720;
+    /** Pictures are decoded down to about the screen's width (set in init). */
+    private static int MAX_SIDE = 720;
     private static final long DISK_LIMIT = 60L * 1024 * 1024;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -35,7 +36,9 @@ final class Images {
         if (memory != null) {
             return;
         }
-        int kb = (int) (Runtime.getRuntime().maxMemory() / 1024 / 6);
+        android.util.DisplayMetrics m = c.getResources().getDisplayMetrics();
+        MAX_SIDE = Math.max(720, Math.min(1280, Math.max(m.widthPixels, m.heightPixels) / 2 + Math.min(m.widthPixels, m.heightPixels) / 2));
+        int kb = (int) (Runtime.getRuntime().maxMemory() / 1024 / 5);
         memory = new LruCache<String, Bitmap>(kb) {
             @Override
             protected int sizeOf(String key, Bitmap b) {
@@ -78,6 +81,60 @@ final class Images {
                     view.setImageBitmap(b);
                     view.setAlpha(0f);
                     view.animate().alpha(1f).setDuration(Ui.FAST).start();
+                }
+            });
+        });
+    }
+
+    private static final java.util.regex.Pattern VIDEO_THUMB =
+            java.util.regex.Pattern.compile("^https?://i\\d?\\.ytimg\\.com/(?:vi|vi_webp)/([A-Za-z0-9_-]{11})/");
+
+    /** A sharp version of a video thumbnail: 1280x720 ("hq720"), or null if `url` is not one. */
+    static String sharp(String url) {
+        if (url == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = VIDEO_THUMB.matcher(url);
+        return m.find() && !url.contains("hq720") && !url.contains("maxres") && !url.contains("oar")
+                ? "https://i.ytimg.com/vi/" + m.group(1) + "/hq720.jpg" : null;
+    }
+
+    /**
+     * Two passes, as YouTube does: the small picture first (fast, often cached), then the
+     * sharp one replaces it when it arrives. Falls back to "sddefault" for videos without hq720.
+     */
+    static void loadSharp(final ImageView view, final String url) {
+        final String hi = sharp(url);
+        if (hi == null) {
+            load(view, url);
+            return;
+        }
+        Bitmap ready = memory.get(hi);
+        if (ready != null) {
+            view.setTag(url);
+            view.animate().cancel();
+            view.setAlpha(1f);
+            view.setImageBitmap(ready);
+            return;
+        }
+        load(view, url);
+        POOL.execute(() -> {
+            Bitmap b = fetch(hi);
+            String used = hi;
+            if (b == null) {
+                used = hi.replace("hq720.jpg", "sddefault.jpg");
+                b = fetch(used);
+            }
+            if (b == null) {
+                return;
+            }
+            final Bitmap got = b;
+            memory.put(hi, got);
+            MAIN.post(() -> {
+                if (url.equals(view.getTag())) {
+                    view.animate().cancel();
+                    view.setAlpha(1f);
+                    view.setImageBitmap(got);
                 }
             });
         });
@@ -127,6 +184,11 @@ final class Images {
                     }
                     int code = c.getResponseCode();
                     if (code < 200 || code >= 300) {
+                        // Not every Short has a portrait cover ("oardefault"): use the regular one.
+                        if (code == 404 && url.contains("/oardefault.jpg")) {
+                            c.disconnect();
+                            return fetch(url.replace("/oardefault.jpg", "/hqdefault.jpg"));
+                        }
                         android.util.Log.w("StreamPipe", "image " + code + ": " + url);
                         return null;
                     }
@@ -147,7 +209,8 @@ final class Images {
             }
             o = new BitmapFactory.Options();
             o.inSampleSize = sample;
-            o.inPreferredConfig = Bitmap.Config.RGB_565;
+            // Full colour: 16-bit pictures show bands in skies and dark gradients.
+            o.inPreferredConfig = Bitmap.Config.ARGB_8888;
             return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
         } catch (Exception | OutOfMemoryError e) {
             return null;

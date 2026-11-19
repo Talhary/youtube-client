@@ -326,6 +326,11 @@ final class Exo {
         seekTo(player.getCurrentPosition() / 1000.0 + seconds);
     }
 
+    /** 0 = silent, 1 = full (feed previews can be muted). */
+    void setVolume(float v) {
+        player.setVolume(v);
+    }
+
     void setRate(double rate) {
         player.setPlaybackParameters(new PlaybackParameters((float) rate));
     }

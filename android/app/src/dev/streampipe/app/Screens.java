@@ -178,6 +178,7 @@ final class FeedScreen extends Screen {
         this.nav = nav;
         View logo = logo(c, nav);
         list = new FeedList(c, false, nav::open);
+        list.setPreview(true);
         // "Not interested" applies to what YouTube recommends.
         list.setMenu(nav, !subscriptions);
         if (!subscriptions) {
@@ -719,6 +720,7 @@ final class SearchScreen extends Screen {
         field.setLayoutParams(fl);
 
         results = new FeedList(c, false, nav::open);
+        results.setPreview(true);
         results.setMenu(nav, false);
         results.setSource(r -> Core.get().call((e, err) -> FeedList.deliver(e, err, r), "search", "query", query, "filter", filterJson()));
         results.showMessage("Search for videos, channels and playlists.", false);
@@ -1024,6 +1026,33 @@ final class SettingsScreen extends Screen {
             prefs.edit().putBoolean("prefetch", on).apply();
             Core.get().prefetch = on && nav.directPlayer();
         });
+        final String[] feedModes = {"always", "wifi", "off"};
+        final String[] feedLabels = {"Always on", "Wi-Fi only", "Off"};
+        final TextView feedRow = Ui.text(c, 15, Ui.TEXT, false);
+        final Runnable paintFeed = () -> {
+            String m = FeedPreview.mode(c);
+            int i = java.util.Arrays.asList(feedModes).indexOf(m);
+            feedRow.setText("Playback in feeds: " + feedLabels[Math.max(0, i)]);
+        };
+        paintFeed.run();
+        feedRow.setPadding(Ui.dp(16), Ui.dp(14), Ui.dp(16), Ui.dp(4));
+        feedRow.setBackground(Ui.ripple());
+        feedRow.setOnClickListener(v -> Sheet.choose(c, "Playback in feeds", feedLabels,
+                Math.max(0, java.util.Arrays.asList(feedModes).indexOf(FeedPreview.mode(c))), pick -> {
+                    prefs.edit().putString("feedPreview", feedModes[pick]).apply();
+                    if ("off".equals(feedModes[pick])) {
+                        FeedPreview.get(c).stop();
+                    }
+                    paintFeed.run();
+                }));
+        col.addView(feedRow, Ui.lin(Ui.MATCH, Ui.WRAP));
+        TextView feedHint = Ui.text(c, 12, Ui.MUTE, false);
+        feedHint.setText("The video most in view, or the one you touch, plays in Home, Subscriptions, Search and channels");
+        feedHint.setPadding(Ui.dp(16), 0, Ui.dp(16), Ui.dp(10));
+        col.addView(feedHint);
+        Switch feedSound = toggle(c, col, "Sound in feed playback", "Off: feed videos play muted (tap the speaker on a card to change)");
+        feedSound.setChecked(!prefs.getBoolean("feedPreviewMuted", false));
+        feedSound.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("feedPreviewMuted", !on).apply());
         Switch swipes = toggle(c, col, "Swipe controls in fullscreen",
                 "Swipe up and down on the left side for brightness and on the right side for volume");
         swipes.setChecked(prefs.getBoolean("swipeControls", false));

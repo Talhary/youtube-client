@@ -156,6 +156,7 @@ public final class MainActivity extends Activity
         root.addView(sheet, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
 
         PlaybackService.controller = this;
+        FeedPreview.allowed = () -> !watch.isOpen();
         if (prefs().getBoolean("musicMode", false)) {
             musicMode = true;
             tabs = musicTabs;
@@ -288,6 +289,7 @@ public final class MainActivity extends Activity
     @Override
     protected void onStop() {
         super.onStop();
+        FeedPreview.get(this).stop();
         android.util.Log.i("StreamPipe", "app: onStop keepPlaying=" + keepPlaying());
         if (onShorts()) {
             tabs[TAB_SHORTS].onHidden();
@@ -456,6 +458,7 @@ public final class MainActivity extends Activity
     }
 
     private void selectTab(int i) {
+        FeedPreview.get(this).stop();
         final Screen old = tabIndex >= 0 ? tabs[tabIndex] : null;
         Screen next = tab(i);
         tabIndex = i;
@@ -566,6 +569,7 @@ public final class MainActivity extends Activity
 
     @Override
     public void push(final Screen screen) {
+        FeedPreview.get(this).stop();
         if (watch.isExpanded()) {
             watch.minimize();
         }
@@ -617,6 +621,7 @@ public final class MainActivity extends Activity
 
     @Override
     public void open(Core.Item item) {
+        FeedPreview.get(this).stop();
         if (item.music && !item.playable()) {
             push(new MusicPageScreen(this, this, item));
             return;
