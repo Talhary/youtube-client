@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the StreamPipe Android APK without Gradle: core (cargo-ndk),
+# Build the PlayTube Android APK without Gradle: core (cargo-ndk),
 # resources (aapt2), Java (javac + d8), then align and sign.
 #
 #   android/build.sh            # arm64-v8a
@@ -23,7 +23,7 @@ VERSION_NAME="${VERSION_NAME:-0.3.0}"
 VERSION_CODE="${VERSION_CODE:-3}"
 MIN_SDK=26
 OUT="$HERE/build"
-APK="$ROOT/dist/StreamPipe-$VERSION_NAME-android.apk"
+APK="$ROOT/dist/PlayTube-$VERSION_NAME-android.apk"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/assets" "$OUT/gen" "$OUT/classes" "$OUT/dex" "$OUT/apk" "$ROOT/dist"

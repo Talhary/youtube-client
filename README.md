@@ -1,6 +1,8 @@
 <div align="center">
 
-  <h1>StreamPipe</h1>
+  <img src="docs/icon.png" width="112" alt="PlayTube icon">
+
+  <h1>PlayTube</h1>
 
   <h3>YouTube and YouTube Music for Android, signed in with your own account, without ads, played by a native player.</h3>
 
@@ -12,7 +14,7 @@
   </p>
 
   <p>
-    StreamPipe looks and works like YouTube's own app: the same Home, Shorts, Subscriptions and You tabs,
+    PlayTube looks and works like YouTube's own app: the same Home, Shorts, Subscriptions and You tabs,
     the same watch page and mini player. Underneath, videos play in Android's own media player
     (ExoPlayer), fed by a stream resolver that runs on the phone. No web view, no ads.
   </p>
@@ -27,10 +29,10 @@
 
 ---
 
-## Why StreamPipe?
+## Why PlayTube?
 
 Alternative YouTube clients usually make you choose: privacy and no ads, or your own account with its
-recommendations, subscriptions, history and playlists. StreamPipe keeps your account. You sign in once
+recommendations, subscriptions, history and playlists. PlayTube keeps your account. You sign in once
 on Google's own page inside the app; the session stays on the phone and the app reads your personal
 Home, Subscriptions, history and library from YouTube directly.
 
@@ -111,8 +113,17 @@ and the battery lasts longer than with a web page.
 
 ## Download
 
-Get the APK from the [releases page](https://github.com/Talhary/youtube-client/releases). One APK
-runs on phones (arm64-v8a) and on the Android emulator (x86_64). Android 8.0 or newer.
+Get the APK from the [releases page](https://github.com/Talhary/youtube-client/releases). Android 8.0 or newer.
+
+#### Which APK should I download?
+
+| File | For |
+|---|---|
+| `PlayTube-<version>-arm64-v8a.apk` | Phones and tablets from the last several years (smallest download) |
+| `PlayTube-<version>-universal.apk` | Not sure? It runs on 64-bit phones and on the Android emulator |
+| `PlayTube-<version>-x86_64.apk` | The Android emulator and x86 Chromebooks |
+
+32-bit-only phones (armeabi-v7a) are not supported yet.
 
 After installing, open **You → Sign in** and sign in on Google's page. Without signing in the app works
 too, but YouTube then only serves short previews to the player on many connections.
@@ -128,7 +139,7 @@ Updates install over the previous version and keep your sign-in, settings and do
 | `android/app` | The app: plain Java on the Android framework (no AndroidX, no Gradle); ExoPlayer for playback |
 | `core` | Rust: YouTube's page API (feeds, Shorts, comments, account actions), the stream proxy, downloads, YouTube Music |
 | `android/rust` | The JNI bridge between the app and the core |
-| `libytp.so` | The stream resolver ([yt-parser](https://github.com/talhary-dot/yt-parser), Go), turning a video into its stream addresses |
+| `libytp.so` | The stream resolver (Go, kept in a separate private repository), turning a video into its stream addresses |
 | `desktop`, `ui` | A desktop version (egui + mpv) with the same core |
 
 ---
@@ -142,12 +153,12 @@ Requirements: Android SDK (build-tools 34, platform 34) at `C:\android`, NDK 26.
 # The resolver library (in the yt-parser checkout at third_party/yt-parser-src)
 ABIS="arm64-v8a x86_64" third_party/yt-parser-src/build-android.sh
 
-# The APK (dist/StreamPipe-<version>-android.apk)
-ABIS="arm64-v8a x86_64" VERSION_NAME=0.6.2 VERSION_CODE=10 bash android/build.sh
+# The APK (dist/PlayTube-<version>-android.apk)
+ABIS="arm64-v8a x86_64" VERSION_NAME=0.7.0 VERSION_CODE=11 bash android/build.sh
 ```
 
 ---
 
 <div align="center">
-  <sub>StreamPipe is not affiliated with YouTube or Google. Private preview: the name and icon will change before the public release.</sub>
+  <sub>PlayTube is not affiliated with YouTube or Google. Private preview.</sub>
 </div>

@@ -178,12 +178,12 @@ final class MusicBar {
     private MusicBar() {}
 
     static TextView logo(Context c, final Nav nav) {
-        SpannableString s = new SpannableString("StreamPipe Music  ⇄");
-        s.setSpan(new ForegroundColorSpan(Ui.ACCENT), 11, 16, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        s.setSpan(new ForegroundColorSpan(Ui.MUTE), 16, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        SpannableString s = new SpannableString("PlayTube Music  ⇄");
+        s.setSpan(new ForegroundColorSpan(Ui.ACCENT), 9, 14, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new ForegroundColorSpan(Ui.MUTE), 14, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         TextView t = Ui.lines(Ui.text(c, 20, Ui.TEXT, true), 1);
         t.setText(s);
-        t.setContentDescription("YouTube Music. Tap to switch to YouTube");
+        t.setContentDescription("PlayTube Music. Tap to switch to videos");
         t.setOnClickListener(v -> nav.setMusicMode(false));
         return t;
     }

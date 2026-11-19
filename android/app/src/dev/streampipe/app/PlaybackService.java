@@ -159,7 +159,7 @@ public final class PlaybackService extends Service {
         PendingIntent content = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
         b.setSmallIcon(R.drawable.ic_play)
-                .setContentTitle(title.isEmpty() ? "StreamPipe" : title)
+                .setContentTitle(title.isEmpty() ? "PlayTube" : title)
                 .setContentText(artist)
                 .setLargeIcon(art)
                 .setContentIntent(content)

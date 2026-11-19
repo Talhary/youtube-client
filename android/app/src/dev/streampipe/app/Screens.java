@@ -229,20 +229,20 @@ final class FeedScreen extends Screen {
     private final Nav nav;
     private LinearLayout channels;
 
-    /** YouTube's logo: the red play button and the word mark. Tapping it switches to YouTube Music. */
+    /** The app's logo: its mark and the word "PlayTube". Tapping it switches to Music. */
     static View logo(Context c, final Nav nav) {
         LinearLayout l = Ui.row(c);
         ImageView mark = new ImageView(c);
-        mark.setImageResource(R.drawable.ic_yt_logo);
+        mark.setImageResource(R.drawable.ic_playtube_logo);
         mark.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        l.addView(mark, Ui.lin(Ui.dp(30), Ui.dp(22)));
+        l.addView(mark, Ui.lin(Ui.dp(28), Ui.dp(28)));
         TextView word = Ui.text(c, 20, Ui.TEXT, false);
-        word.setText("YouTube");
+        word.setText("PlayTube");
         word.setTypeface(android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.BOLD));
         word.setLetterSpacing(-0.04f);
-        word.setPadding(Ui.dp(2), 0, 0, Ui.dp(1));
+        word.setPadding(Ui.dp(6), 0, 0, Ui.dp(1));
         l.addView(word, Ui.lin(Ui.WRAP, Ui.WRAP));
-        l.setContentDescription("YouTube. Tap to switch to YouTube Music");
+        l.setContentDescription("PlayTube. Tap to switch to Music");
         l.setOnClickListener(v -> nav.setMusicMode(true));
         FrameLayout wrap = new FrameLayout(c);
         wrap.addView(l, Ui.frame(Ui.WRAP, Ui.WRAP, Gravity.CENTER_VERTICAL | Gravity.START));
@@ -1103,7 +1103,7 @@ final class SettingsScreen extends Screen {
 
         col.addView(section(c, "About"));
         TextView version = Ui.text(c, 14, Ui.MUTE, false);
-        version.setText("StreamPipe " + Core.get().version);
+        version.setText("PlayTube " + Core.get().version);
         version.setPadding(Ui.dp(16), Ui.dp(10), Ui.dp(16), Ui.dp(4));
         col.addView(version);
         rules = Ui.text(c, 14, Ui.MUTE, false);
