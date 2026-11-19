@@ -108,6 +108,16 @@ enum UiCmd {
         video: Option<String>,
     },
     HistoryActions { req: u64 },
+    Shorts {
+        req: u64,
+        op: String,
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        params: Option<String>,
+        #[serde(default)]
+        token: Option<String>,
+    },
     Feedback { req: u64, token: String },
     NotInterested { req: u64, id: String },
     PrefetchStreams { ids: Vec<String> },
@@ -192,6 +202,7 @@ fn to_command(c: UiCmd) -> Command {
         UiCmd::EditPlaylist { req, playlist, video, add } => Command::EditPlaylist { req, playlist, video, add },
         UiCmd::CreatePlaylist { req, title, privacy, video } => Command::CreatePlaylist { req, title, privacy, video },
         UiCmd::HistoryActions { req } => Command::HistoryActions { req },
+        UiCmd::Shorts { req, op, id, params, token } => Command::Shorts { req, op, id, params, token },
         UiCmd::Feedback { req, token } => Command::Feedback { req, token },
         UiCmd::NotInterested { req, id } => Command::NotInterested { req, id },
         UiCmd::PrefetchStreams { ids } => Command::PrefetchStreams { ids },

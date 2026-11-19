@@ -30,6 +30,7 @@ final class ChannelScreen extends Screen {
     private final LinearLayout about;
     private final TextView barTitle;
     private int tab;
+    private TextView countsLine;
     /** The first answer (header and Videos tab), kept so going back to Videos needs no request. */
     private Core.Page firstVideos;
 
@@ -40,18 +41,76 @@ final class ChannelScreen extends Screen {
         header = Ui.column(c);
         top = Ui.column(c);
         header.addView(top, Ui.lin(Ui.MATCH, Ui.WRAP));
-        header.addView(chips(c, TABS, 0, this::select), Ui.lin(Ui.MATCH, Ui.WRAP));
+        header.addView(tabStrip(c, TABS, this::select), Ui.lin(Ui.MATCH, Ui.WRAP));
         about = Ui.column(c);
         about.setPadding(Ui.dp(16), Ui.dp(8), Ui.dp(16), Ui.dp(16));
         about.setVisibility(View.GONE);
         header.addView(about, Ui.lin(Ui.MATCH, Ui.WRAP));
-        list = new FeedList(c, false, nav::open);
+        list = new FeedList(c, false, item -> {
+            // A channel's Shorts open in the Shorts player, as on YouTube.
+            if ("shorts".equals(TAB_KEYS[tab]) && item.type == Core.Item.VIDEO) {
+                nav.openShort(item.id);
+            } else {
+                nav.open(item);
+            }
+        });
         list.setMenu(nav, false);
         list.setHeader(header);
         list.setEmptyText("This channel has no videos.");
         list.setSource(this::load);
-        view = page(c, bar(c, nav, true, barTitle), list);
+        // YouTube's channel bar: back, then search; the name is in the header below.
+        barTitle.setAlpha(0f);
+        LinearLayout col = Ui.column(c);
+        col.setBackgroundColor(Ui.BG);
+        col.addView(bar(c, nav, true, barTitle,
+                Ui.iconButton(c, R.drawable.ic_search_outline, "Search", v -> nav.push(new SearchScreen(c, nav)))));
+        col.addView(list, new LinearLayout.LayoutParams(Ui.MATCH, 0, 1f));
+        view = col;
         list.load();
+    }
+
+    /** Text tabs with a line under the chosen one, as on YouTube's channel pages. */
+    private static View tabStrip(Context c, String[] labels, final Sheet.Pick pick) {
+        final LinearLayout row = Ui.row(c);
+        row.setPadding(Ui.dp(4), 0, Ui.dp(4), 0);
+        final Runnable[] paint = new Runnable[1];
+        final int[] chosen = {0};
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            LinearLayout cell = Ui.column(c);
+            cell.setGravity(Gravity.CENTER_HORIZONTAL);
+            TextView t = Ui.text(c, 15, Ui.MUTE, true);
+            t.setText(labels[i]);
+            t.setPadding(Ui.dp(12), Ui.dp(14), Ui.dp(12), Ui.dp(12));
+            cell.addView(t, Ui.lin(Ui.WRAP, Ui.WRAP));
+            View line = new View(c);
+            line.setBackgroundColor(Ui.TEXT);
+            cell.addView(line, Ui.lin(Ui.MATCH, Ui.dp(2)));
+            cell.setBackground(Ui.ripple());
+            cell.setOnClickListener(v -> {
+                chosen[0] = index;
+                paint[0].run();
+                pick.picked(index);
+            });
+            row.addView(cell, Ui.lin(Ui.WRAP, Ui.WRAP));
+        }
+        paint[0] = () -> {
+            for (int i = 0; i < row.getChildCount(); i++) {
+                LinearLayout cell = (LinearLayout) row.getChildAt(i);
+                ((TextView) cell.getChildAt(0)).setTextColor(i == chosen[0] ? Ui.TEXT : Ui.MUTE);
+                cell.getChildAt(1).setVisibility(i == chosen[0] ? View.VISIBLE : View.INVISIBLE);
+            }
+        };
+        paint[0].run();
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(c);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.addView(row);
+        LinearLayout wrap = Ui.column(c);
+        wrap.addView(scroll);
+        wrap.addView(Ui.divider(c));
+        LinearLayout.LayoutParams gap = Ui.lin(Ui.MATCH, Ui.dp(8));
+        wrap.addView(new View(c), gap);
+        return wrap;
     }
 
     private void select(int index) {
@@ -127,25 +186,33 @@ final class ChannelScreen extends Screen {
             top.addView(frame, bl);
         }
         LinearLayout row = Ui.row(c);
-        row.setPadding(Ui.dp(16), Ui.dp(14), Ui.dp(16), Ui.dp(10));
+        row.setPadding(Ui.dp(16), Ui.dp(16), Ui.dp(16), Ui.dp(12));
         ImageView avatar = new ImageView(c);
         avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
         avatar.setBackgroundColor(Ui.PANEL);
         Ui.clipCircle(avatar);
         Images.load(avatar, Core.url(Core.str(ch, "avatar")));
-        row.addView(avatar, Ui.lin(Ui.dp(64), Ui.dp(64)));
+        row.addView(avatar, Ui.lin(Ui.dp(72), Ui.dp(72)));
         LinearLayout col = Ui.column(c);
-        col.setPadding(Ui.dp(14), 0, 0, 0);
-        TextView n = Ui.lines(Ui.text(c, 20, Ui.TEXT, true), 2);
-        n.setText(ch.optString("name") + (page.optBoolean("verified") ? "  ✓" : ""));
+        col.setPadding(Ui.dp(16), 0, 0, 0);
+        TextView n = Ui.lines(Ui.text(c, 26, Ui.TEXT, true), 2);
+        n.setText(ch.optString("name") + (page.optBoolean("verified") ? " \u2714" : ""));
         col.addView(n);
-        String line = Ui.join(Core.str(page, "handle"),
+        String handle = Core.str(page, "handle");
+        if (handle != null && !handle.isEmpty()) {
+            TextView h = Ui.lines(Ui.text(c, 14, Ui.TEXT, true), 1);
+            h.setText(handle);
+            h.setPadding(0, Ui.dp(6), 0, 0);
+            col.addView(h);
+        }
+        String line = Ui.join(
                 ch.isNull("subscribers") ? null : Ui.count(ch.optLong("subscribers")) + " subscribers",
-                page.isNull("video_count") ? null : Ui.count(page.optLong("video_count")) + " videos");
+                page.isNull("video_count") ? null : Ui.count(page.optLong("video_count")) + " videos").replace(" · ", " \u2022 ");
         if (!line.isEmpty()) {
-            TextView s = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 2);
+            TextView s = Ui.lines(Ui.text(c, 13, Ui.MUTE, false), 2);
+            countsLine = s;
             s.setText(line);
-            s.setPadding(0, Ui.dp(5), 0, 0);
+            s.setPadding(0, Ui.dp(4), 0, 0);
             col.addView(s);
         }
         row.addView(col, Ui.weight(Ui.WRAP));
@@ -153,7 +220,7 @@ final class ChannelScreen extends Screen {
         String description = page.optString("description");
         if (!description.isEmpty()) {
             TextView d = Ui.lines(Ui.text(c, 13, Ui.MUTE, false), 2);
-            d.setText(description);
+            d.setText(description.replace('\n', ' '));
             d.setPadding(Ui.dp(16), 0, Ui.dp(16), Ui.dp(10));
             d.setOnClickListener(v -> select(TABS.length - 1));
             top.addView(d, Ui.lin(Ui.MATCH, Ui.WRAP));
@@ -164,10 +231,10 @@ final class ChannelScreen extends Screen {
     /** Subscribe / Subscribed, and once subscribed the bell with its three choices. */
     private View subscribeRow() {
         LinearLayout row = Ui.row(c);
-        row.setPadding(Ui.dp(16), Ui.dp(2), Ui.dp(16), Ui.dp(6));
-        final TextView b = Ui.text(c, 14, Ui.ON_ACCENT, true);
+        row.setPadding(Ui.dp(16), Ui.dp(4), Ui.dp(16), Ui.dp(8));
+        final TextView b = Ui.text(c, 15, Ui.ON_ACCENT, true);
         b.setGravity(Gravity.CENTER);
-        b.setPadding(Ui.dp(16), Ui.dp(10), Ui.dp(16), Ui.dp(10));
+        b.setPadding(Ui.dp(16), Ui.dp(11), Ui.dp(16), Ui.dp(11));
         row.addView(b, Ui.weight(Ui.WRAP));
         final ImageView bell = Ui.icon(c, R.drawable.ic_bell, Ui.TEXT);
         bell.setBackground(new RippleDrawable(ColorStateList.valueOf(Ui.RIPPLE), Ui.rounded(Ui.PANEL, 20), null));
@@ -194,6 +261,12 @@ final class ChannelScreen extends Screen {
                 state[0] = ok.optBoolean("subscribed");
             }
             bellChoices[0] = ok.optJSONArray("bell");
+            // The page's own counts (the extractor can mix them up on YouTube's newer header).
+            String subsText = ok.isNull("subscribers_text") ? null : ok.optString("subscribers_text", null);
+            String videosText = ok.isNull("videos_text") ? null : ok.optString("videos_text", null);
+            if (countsLine != null && (subsText != null || videosText != null)) {
+                countsLine.setText(Ui.join(subsText, videosText).replace(" · ", " • "));
+            }
             String now = ok.optString("bell_now");
             bell.setImageResource("NOTIFICATIONS_ACTIVE".equals(now) ? R.drawable.ic_bell_active
                     : "NOTIFICATIONS_OFF".equals(now) ? R.drawable.ic_bell_off : R.drawable.ic_bell);
@@ -265,7 +338,7 @@ final class ChannelScreen extends Screen {
             d.setText(ok.optString("description"));
             d.setLineSpacing(Ui.dp(4), 1f);
             d.setAutoLinkMask(android.text.util.Linkify.WEB_URLS);
-            d.setLinkTextColor(Ui.ACCENT);
+            d.setLinkTextColor(Ui.LINK);
             about.addView(d);
             JSONArray links = ok.optJSONArray("links");
             if (links != null && links.length() > 0) {
@@ -276,7 +349,7 @@ final class ChannelScreen extends Screen {
                         continue;
                     }
                     final String url = l.optString("url");
-                    TextView t = Ui.text(c, 14, Ui.ACCENT, false);
+                    TextView t = Ui.text(c, 14, Ui.LINK, false);
                     t.setText(l.optString("name") + "\n" + url);
                     t.setPadding(0, Ui.dp(6), 0, Ui.dp(6));
                     t.setOnClickListener(v -> {

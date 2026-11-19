@@ -26,6 +26,10 @@ import android.widget.TextView;
 final class Ui {
     // The palette. These are set once per activity by init() for the dark or light theme.
     static int BG, PANEL, LINE, MUTE, TEXT, ACCENT, DANGER;
+    /** Links and "Show more" text (YouTube's blue). */
+    static int LINK;
+    /** YouTube red: the logo, progress lines, LIVE badges. */
+    static final int RED = 0xFFFF0033;
     /** Text and icons drawn on top of the accent colour. */
     static int ON_ACCENT;
     /** Touch feedback tint. */
@@ -50,29 +54,31 @@ final class Ui {
     static void init(Context c, boolean lightTheme) {
         density = c.getResources().getDisplayMetrics().density;
         light = lightTheme;
+        // YouTube's own app colours.
         if (lightTheme) {
             BG = 0xFFFFFFFF;
-            PANEL = 0xFFF0F0F2;
-            LINE = 0xFFE0E0E5;
-            MUTE = 0xFF5E5E68;
-            TEXT = 0xFF0F0F10;
-            // The dark theme's green is too pale on white; this one keeps text readable.
-            ACCENT = 0xFF00875A;
-            DANGER = 0xFFC62828;
+            PANEL = 0xFFF2F2F2;
+            LINE = 0xFFE5E5E5;
+            MUTE = 0xFF606060;
+            TEXT = 0xFF0F0F0F;
+            ACCENT = 0xFF0F0F0F;
+            LINK = 0xFF065FD4;
+            DANGER = 0xFFCC0000;
             ON_ACCENT = 0xFFFFFFFF;
             RIPPLE = 0x1F000000;
             SHEET = 0xFFFFFFFF;
         } else {
-            BG = 0xFF050505;
-            PANEL = 0xFF121214;
-            LINE = 0xFF1F1F23;
-            MUTE = 0xFF8E8E96;
-            TEXT = 0xFFF2F2F3;
-            ACCENT = 0xFF00E599;
-            DANGER = 0xFFFF6B6B;
-            ON_ACCENT = 0xFF000000;
-            RIPPLE = 0x26FFFFFF;
-            SHEET = 0xFF18181B;
+            BG = 0xFF0F0F0F;
+            PANEL = 0xFF272727;
+            LINE = 0xFF333333;
+            MUTE = 0xFFAAAAAA;
+            TEXT = 0xFFF1F1F1;
+            ACCENT = 0xFFF1F1F1;
+            LINK = 0xFF3EA6FF;
+            DANGER = 0xFFFF4E45;
+            ON_ACCENT = 0xFF0F0F0F;
+            RIPPLE = 0x33FFFFFF;
+            SHEET = 0xFF212121;
         }
     }
 
@@ -154,7 +160,7 @@ final class Ui {
 
     static ProgressBar spinner(Context c) {
         ProgressBar p = new ProgressBar(c);
-        p.setIndeterminateTintList(ColorStateList.valueOf(ACCENT));
+        p.setIndeterminateTintList(ColorStateList.valueOf(MUTE));
         return p;
     }
 
@@ -170,8 +176,8 @@ final class Ui {
         TextView b = text(c, 14, ON_ACCENT, true);
         b.setText(label);
         b.setGravity(Gravity.CENTER);
-        b.setPadding(dp(24), dp(12), dp(24), dp(12));
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33000000), rounded(ACCENT, 24), null));
+        b.setPadding(dp(16), dp(9), dp(16), dp(9));
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33000000), rounded(ACCENT, 18), null));
         b.setOnClickListener(onClick);
         return b;
     }

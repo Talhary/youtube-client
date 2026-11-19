@@ -65,9 +65,16 @@ final class CommentsPanel extends FrameLayout {
         setVisibility(GONE);
 
         LinearLayout col = Ui.column(c);
+        // YouTube's sheet: a grab handle, then "Comments" and the close button.
+        View handle = new View(c);
+        handle.setBackground(Ui.rounded(Ui.light ? 0x33000000 : 0x40FFFFFF, 2));
+        LinearLayout.LayoutParams hl = Ui.lin(Ui.dp(40), Ui.dp(4));
+        hl.gravity = Gravity.CENTER_HORIZONTAL;
+        hl.topMargin = Ui.dp(8);
+        col.addView(handle, hl);
         LinearLayout bar = Ui.row(c);
         bar.setPadding(Ui.dp(16), 0, Ui.dp(4), 0);
-        TextView title = Ui.text(c, 16, Ui.TEXT, true);
+        TextView title = Ui.text(c, 20, Ui.TEXT, true);
         title.setText("Comments");
         bar.addView(title, Ui.weight(Ui.WRAP));
         bar.addView(Ui.iconButton(c, R.drawable.ic_close, "Close comments", v -> close()));
@@ -246,7 +253,7 @@ final class CommentsPanel extends FrameLayout {
 
     private static final class Row {
         ImageView avatar;
-        TextView head, text, foot;
+        TextView head, text, likes, replies, pinned;
     }
 
     private final class Adapter extends BaseAdapter {
@@ -282,18 +289,35 @@ final class CommentsPanel extends FrameLayout {
                 r.avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 r.avatar.setBackgroundColor(Ui.PANEL);
                 Ui.clipCircle(r.avatar);
-                row.addView(r.avatar, Ui.lin(Ui.dp(36), Ui.dp(36)));
+                row.addView(r.avatar, Ui.lin(Ui.dp(28), Ui.dp(28)));
                 LinearLayout col = Ui.column(c);
-                col.setPadding(Ui.dp(12), 0, 0, 0);
+                col.setPadding(Ui.dp(14), 0, 0, 0);
+                r.pinned = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
+                r.pinned.setPadding(0, 0, 0, Ui.dp(4));
+                col.addView(r.pinned, Ui.lin(Ui.MATCH, Ui.WRAP));
                 r.head = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
                 col.addView(r.head, Ui.lin(Ui.MATCH, Ui.WRAP));
                 r.text = Ui.text(c, 14, Ui.TEXT, false);
-                r.text.setLineSpacing(Ui.dp(3.5f), 1f);
-                r.text.setPadding(0, Ui.dp(5), 0, 0);
+                r.text.setLineSpacing(Ui.dp(3f), 1f);
+                r.text.setPadding(0, Ui.dp(4), 0, 0);
+                r.text.setAutoLinkMask(android.text.util.Linkify.WEB_URLS);
+                r.text.setLinkTextColor(Ui.LINK);
                 col.addView(r.text, Ui.lin(Ui.MATCH, Ui.WRAP));
-                r.foot = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
-                r.foot.setPadding(0, Ui.dp(7), 0, 0);
-                col.addView(r.foot, Ui.lin(Ui.MATCH, Ui.WRAP));
+                // Like (with the count), dislike and reply, as small icons.
+                LinearLayout acts = Ui.row(c);
+                acts.setPadding(0, Ui.dp(10), 0, 0);
+                acts.addView(Ui.icon(c, R.drawable.ic_like_outline, Ui.TEXT), Ui.lin(Ui.dp(18), Ui.dp(18)));
+                r.likes = Ui.text(c, 12, Ui.MUTE, false);
+                r.likes.setPadding(Ui.dp(6), 0, Ui.dp(22), 0);
+                acts.addView(r.likes, Ui.lin(Ui.WRAP, Ui.WRAP));
+                acts.addView(Ui.icon(c, R.drawable.ic_dislike_outline, Ui.TEXT), Ui.lin(Ui.dp(18), Ui.dp(18)));
+                View gap = new View(c);
+                acts.addView(gap, Ui.lin(Ui.dp(28), 1));
+                acts.addView(Ui.icon(c, R.drawable.ic_comment_outline, Ui.TEXT), Ui.lin(Ui.dp(18), Ui.dp(18)));
+                col.addView(acts, Ui.lin(Ui.MATCH, Ui.WRAP));
+                r.replies = Ui.text(c, 14, Ui.LINK, true);
+                r.replies.setPadding(0, Ui.dp(12), 0, 0);
+                col.addView(r.replies, Ui.lin(Ui.WRAP, Ui.WRAP));
                 row.addView(col, Ui.weight(Ui.WRAP));
                 row.setTag(r);
                 view = row;
@@ -301,16 +325,17 @@ final class CommentsPanel extends FrameLayout {
             Row r = (Row) view.getTag();
             JSONObject o = items.get(position);
             Images.load(r.avatar, Core.url(Core.str(o, "avatar")));
-            r.head.setText(Ui.join(o.optBoolean("pinned") ? "Pinned" : null, Core.str(o, "author"),
-                    o.optString("published"), o.optBoolean("by_owner") ? "Creator" : null));
+            r.pinned.setText("\uD83D\uDCCC  Pinned");
+            r.pinned.setVisibility(o.optBoolean("pinned") ? VISIBLE : GONE);
+            String author = Core.str(o, "author");
+            r.head.setText((author == null ? "" : author) + "  \u2022  " + Core.Item.shortAgo(o.optString("published"))
+                    + (o.optBoolean("hearted") ? "  \u2022  \u2665 by creator" : ""));
             r.text.setText(o.optString("text"));
             long likes = o.isNull("likes") ? -1 : o.optLong("likes", -1);
+            r.likes.setText(likes > 0 ? Ui.count(likes) : "");
             int replies = o.optInt("replies", 0);
-            String foot = Ui.join(likes > 0 ? Ui.count(likes) + (likes == 1 ? " like" : " likes") : null,
-                    replies > 0 ? replies + (replies == 1 ? " reply" : " replies") : null,
-                    o.optBoolean("hearted") ? "Liked by the creator" : null);
-            r.foot.setText(foot);
-            r.foot.setVisibility(foot.isEmpty() ? GONE : VISIBLE);
+            r.replies.setText(replies + (replies == 1 ? " reply" : " replies"));
+            r.replies.setVisibility(replies > 0 ? VISIBLE : GONE);
             return view;
         }
     }

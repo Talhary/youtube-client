@@ -99,6 +99,7 @@ final class WatchLayout extends FrameLayout {
     private int glowColor;
     private final Runnable ambientTick = this::ambient;
     private final LinearLayout miniBar;
+    private android.graphics.drawable.Drawable miniLineDrawable;
     private final TextView miniTitle, miniChannel;
     private final ImageView miniPlay;
     private final TextView title, meta, channelName, description, descriptionToggle;
@@ -141,6 +142,69 @@ final class WatchLayout extends FrameLayout {
     private Core.Item nextUp;
     private int detailsGeneration;
     private boolean descriptionOpen;
+    private View descriptionBox;
+    private TextView commentsHeading;
+    private TextView upNextLabel;
+    private TextView subscribeButton;
+    /** The channel subscription: null while unknown. */
+    private Boolean subscribed;
+    private String subscribedFor;
+    private String likeCount;
+
+    /** "...more": show or hide the description (YouTube opens it from the title or the meta line). */
+    private void toggleDescription() {
+        descriptionOpen = !descriptionOpen;
+        if (descriptionBox != null) {
+            descriptionBox.setVisibility(descriptionOpen && description.length() > 0 ? VISIBLE : GONE);
+        }
+        description.setMaxLines(Integer.MAX_VALUE);
+        descriptionToggle.setText("Show less");
+    }
+
+    private void paintSubscribe() {
+        boolean on = Boolean.TRUE.equals(subscribed);
+        subscribeButton.setText(on ? "Subscribed" : "Subscribe");
+        subscribeButton.setTextColor(on ? Ui.TEXT : Ui.ON_ACCENT);
+        subscribeButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(Ui.RIPPLE),
+                Ui.rounded(on ? Ui.PANEL : Ui.ACCENT, 18), null));
+    }
+
+    private void loadSubscribed(final Core.Item v) {
+        subscribed = null;
+        paintSubscribe();
+        if (v.channelId == null || !Core.get().isSignedIn()) {
+            return;
+        }
+        Core.get().call((e, err) -> {
+            JSONObject ok = e == null ? null : e.optJSONObject("ok");
+            if (ok != null && current != null && v.channelId.equals(current.channelId) && !ok.isNull("subscribed")) {
+                subscribed = ok.optBoolean("subscribed");
+                paintSubscribe();
+            }
+        }, "subscription", "id", v.channelId);
+    }
+
+    private void toggleSubscribe() {
+        final Core.Item v = current;
+        if (v == null || v.channelId == null) {
+            return;
+        }
+        if (!Core.get().isSignedIn()) {
+            android.widget.Toast.makeText(getContext(), "Sign in to subscribe.", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final Boolean before = subscribed;
+        final boolean wanted = !Boolean.TRUE.equals(before);
+        subscribed = wanted;
+        paintSubscribe();
+        Core.get().call((e, err) -> {
+            if (err != null && current == v) {
+                subscribed = before;
+                paintSubscribe();
+                android.widget.Toast.makeText(getContext(), "YouTube did not take that: " + err, android.widget.Toast.LENGTH_LONG).show();
+            }
+        }, "subscribe", "id", v.channelId, "on", wanted);
+    }
 
     WatchLayout(Context c, Player player, Host host) {
         super(c);
@@ -161,13 +225,16 @@ final class WatchLayout extends FrameLayout {
 
         // Details: a header with the video's information, then the related videos.
         LinearLayout header = Ui.column(c);
-        title = Ui.text(c, 17, Ui.TEXT, true);
-        title.setLineSpacing(Ui.dp(3), 1f);
-        title.setPadding(Ui.dp(16), Ui.dp(14), Ui.dp(16), 0);
+        title = Ui.lines(Ui.text(c, 18, Ui.TEXT, true), 2);
+        title.setLineSpacing(Ui.dp(2), 1f);
+        title.setPadding(Ui.dp(12), Ui.dp(12), Ui.dp(12), 0);
         header.addView(title, Ui.lin(Ui.MATCH, Ui.WRAP));
         meta = Ui.text(c, 12, Ui.MUTE, false);
-        meta.setPadding(Ui.dp(16), Ui.dp(7), Ui.dp(16), Ui.dp(12));
+        meta.setPadding(Ui.dp(12), Ui.dp(6), Ui.dp(12), Ui.dp(10));
         header.addView(meta, Ui.lin(Ui.MATCH, Ui.WRAP));
+        OnClickListener openDescription = v -> toggleDescription();
+        title.setOnClickListener(openDescription);
+        meta.setOnClickListener(openDescription);
         musicPanel = new MusicPanel(c, player, new MusicPanel.Host() {
             @Override
             public boolean step(int by) {
@@ -182,15 +249,57 @@ final class WatchLayout extends FrameLayout {
         musicPanel.setVisibility(GONE);
         header.addView(musicPanel, Ui.lin(Ui.MATCH, Ui.WRAP));
 
-        // Actions under the title, in a row that scrolls sideways.
+        // The channel: picture, name and subscribers, Subscribe on the right.
+        LinearLayout ch = Ui.row(c);
+        ch.setPadding(Ui.dp(12), Ui.dp(4), Ui.dp(12), Ui.dp(10));
+        ch.setForeground(Ui.ripple());
+        channelAvatar = new ImageView(c);
+        channelAvatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        channelAvatar.setBackgroundColor(Ui.PANEL);
+        Ui.clipCircle(channelAvatar);
+        ch.addView(channelAvatar, Ui.lin(Ui.dp(36), Ui.dp(36)));
+        LinearLayout who = Ui.row(c);
+        who.setPadding(Ui.dp(10), 0, Ui.dp(8), 0);
+        channelName = Ui.lines(Ui.text(c, 15, Ui.TEXT, true), 1);
+        who.addView(channelName, Ui.lin(Ui.WRAP, Ui.WRAP));
+        channelSubs = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
+        channelSubs.setPadding(Ui.dp(8), 0, 0, 0);
+        channelSubs.setVisibility(GONE);
+        who.addView(channelSubs, Ui.lin(Ui.WRAP, Ui.WRAP));
+        ch.addView(who, Ui.weight(Ui.WRAP));
+        subscribeButton = Ui.text(c, 14, Ui.ON_ACCENT, true);
+        subscribeButton.setGravity(Gravity.CENTER);
+        subscribeButton.setPadding(Ui.dp(16), Ui.dp(9), Ui.dp(16), Ui.dp(9));
+        subscribeButton.setOnClickListener(v -> toggleSubscribe());
+        ch.addView(subscribeButton, Ui.lin(Ui.WRAP, Ui.WRAP));
+        paintSubscribe();
+        ch.setOnClickListener(v -> {
+            if (current != null && current.channelId != null) {
+                host.openChannel(current.channelId, current.channelName);
+            }
+        });
+        channelRow = ch;
+        header.addView(ch, Ui.lin(Ui.MATCH, Ui.WRAP));
+
+        // Actions under the channel, in a row that scrolls sideways.
         LinearLayout actions = Ui.row(c);
-        actions.setPadding(Ui.dp(16), 0, Ui.dp(16), Ui.dp(14));
-        likeButton = pill(c, R.drawable.ic_like, "Like", v -> rate("like"));
-        actions.addView(likeButton, Ui.lin(Ui.WRAP, Ui.WRAP));
-        dislikeButton = pill(c, R.drawable.ic_dislike, "Dislike", v -> rate("dislike"));
-        actions.addView(dislikeButton, pillGap());
-        actions.addView(pill(c, R.drawable.ic_share, "Share", v -> share()), pillGap());
-        LinearLayout save = pill(c, R.drawable.ic_save, "Save", v -> {
+        actions.setPadding(Ui.dp(12), 0, Ui.dp(12), Ui.dp(12));
+        LinearLayout rateBox = Ui.row(c);
+        rateBox.setBackground(Ui.rounded(Ui.PANEL, 18));
+        likeButton = pill(c, R.drawable.ic_like_outline, "Like", v -> rate("like"));
+        likeButton.setBackground(null);
+        rateBox.addView(likeButton, Ui.lin(Ui.WRAP, Ui.WRAP));
+        View split = new View(c);
+        split.setBackgroundColor(Ui.light ? 0x33000000 : 0x40FFFFFF);
+        rateBox.addView(split, Ui.lin(Math.max(1, Ui.dp(1)), Ui.dp(20)));
+        dislikeButton = pill(c, R.drawable.ic_dislike_outline, "Dislike", v -> rate("dislike"));
+        dislikeButton.setBackground(null);
+        dislikeButton.getChildAt(1).setVisibility(GONE);
+        dislikeButton.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(14), Ui.dp(8));
+        rateBox.addView(dislikeButton, Ui.lin(Ui.WRAP, Ui.WRAP));
+        actions.addView(rateBox, Ui.lin(Ui.WRAP, Ui.WRAP));
+        actions.addView(pill(c, R.drawable.ic_share_outline, "Share", v -> share()), pillGap());
+        LinearLayout save = pill(c, R.drawable.ic_save_outline, "Save", v -> {
             if (current != null) {
                 ItemMenu.saveToPlaylist(getContext(), current.id);
             }
@@ -203,7 +312,7 @@ final class WatchLayout extends FrameLayout {
             return true;
         });
         actions.addView(save, pillGap());
-        actions.addView(pill(c, R.drawable.ic_download, "Download", v -> chooseDownload()), pillGap());
+        actions.addView(pill(c, R.drawable.ic_download_outline, "Download", v -> chooseDownload()), pillGap());
         audioButton = Ui.row(c);
         audioButton.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(14), Ui.dp(8));
         audioIcon = Ui.icon(c, R.drawable.ic_headset, Ui.TEXT);
@@ -249,34 +358,8 @@ final class WatchLayout extends FrameLayout {
         header.addView(actionScroll, Ui.lin(Ui.MATCH, Ui.WRAP));
         showAudioOnly(player.audioOnly);
         showRating();
-        header.addView(Ui.divider(c));
 
-        LinearLayout ch = Ui.row(c);
-        ch.setPadding(Ui.dp(16), Ui.dp(10), Ui.dp(8), Ui.dp(10));
-        ch.setForeground(Ui.ripple());
-        channelAvatar = new ImageView(c);
-        channelAvatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        channelAvatar.setBackgroundColor(Ui.PANEL);
-        Ui.clipCircle(channelAvatar);
-        ch.addView(channelAvatar, Ui.lin(Ui.dp(36), Ui.dp(36)));
-        LinearLayout who = Ui.column(c);
-        who.setPadding(Ui.dp(12), 0, 0, 0);
-        channelName = Ui.lines(Ui.text(c, 14, Ui.TEXT, true), 1);
-        who.addView(channelName);
-        channelSubs = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
-        channelSubs.setPadding(0, Ui.dp(2), 0, 0);
-        channelSubs.setVisibility(GONE);
-        who.addView(channelSubs);
-        ch.addView(who, Ui.weight(Ui.WRAP));
-        ch.addView(Ui.icon(c, R.drawable.ic_chevron, Ui.MUTE), Ui.lin(Ui.dp(40), Ui.dp(40)));
-        ch.setOnClickListener(v -> {
-            if (current != null && current.channelId != null) {
-                host.openChannel(current.channelId, current.channelName);
-            }
-        });
-        channelRow = ch;
-        header.addView(ch, Ui.lin(Ui.MATCH, Ui.WRAP));
-        header.addView(Ui.divider(c));
+
 
         LinearLayout desc = Ui.column(c);
         desc.setPadding(Ui.dp(16), Ui.dp(12), Ui.dp(16), Ui.dp(4));
@@ -284,27 +367,29 @@ final class WatchLayout extends FrameLayout {
         description = Ui.text(c, 13, Ui.MUTE, false);
         description.setLineSpacing(Ui.dp(4), 1f);
         Ui.lines(description, 2);
-        description.setLinkTextColor(Ui.ACCENT);
+        description.setLinkTextColor(Ui.LINK);
         description.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
         desc.addView(description, Ui.lin(Ui.MATCH, Ui.WRAP));
         descriptionToggle = Ui.text(c, 12, Ui.ACCENT, true);
         descriptionToggle.setPadding(0, Ui.dp(8), 0, Ui.dp(8));
         desc.addView(descriptionToggle, Ui.lin(Ui.WRAP, Ui.WRAP));
-        desc.setOnClickListener(v -> {
-            descriptionOpen = !descriptionOpen;
-            description.setMaxLines(descriptionOpen ? Integer.MAX_VALUE : 2);
-            descriptionToggle.setText(descriptionOpen ? "Show less" : "Show more");
-        });
-        header.addView(desc, Ui.lin(Ui.MATCH, Ui.WRAP));
+        desc.setOnClickListener(v -> toggleDescription());
+        desc.setBackground(Ui.rounded(Ui.PANEL, 12));
+        LinearLayout.LayoutParams dlp = Ui.lin(Ui.MATCH, Ui.WRAP);
+        dlp.setMargins(Ui.dp(12), 0, Ui.dp(12), Ui.dp(10));
+        desc.setLayoutParams(dlp);
+        descriptionBox = desc;
+        header.addView(desc);
 
         // Comments: a card with the top comment; tapping it opens them all.
         commentsCard = Ui.column(c);
         commentsCard.setPadding(Ui.dp(14), Ui.dp(12), Ui.dp(14), Ui.dp(12));
         commentsCard.setBackground(new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(Ui.RIPPLE), Ui.rounded(Ui.PANEL, 12), null));
-        TextView commentsTitle = Ui.text(c, 14, Ui.TEXT, true);
+        TextView commentsTitle = Ui.text(c, 15, Ui.TEXT, true);
         commentsTitle.setText("Comments");
         commentsCard.addView(commentsTitle);
+        commentsHeading = commentsTitle;
         LinearLayout teaserRow = Ui.row(c);
         teaserRow.setPadding(0, Ui.dp(10), 0, 0);
         teaserAvatar = new ImageView(c);
@@ -324,7 +409,7 @@ final class WatchLayout extends FrameLayout {
             }
         });
         LinearLayout.LayoutParams ccl = Ui.lin(Ui.MATCH, Ui.WRAP);
-        ccl.setMargins(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(6));
+        ccl.setMargins(Ui.dp(12), Ui.dp(2), Ui.dp(12), Ui.dp(16));
         header.addView(commentsCard, ccl);
 
         // YouTube Music: Up next, Lyrics and Related, as the Music player's tabs.
@@ -358,6 +443,8 @@ final class WatchLayout extends FrameLayout {
         TextView upNext = Ui.text(c, 14, Ui.TEXT, true);
         upNext.setText("Up next");
         upNext.setPadding(Ui.dp(16), Ui.dp(10), Ui.dp(16), Ui.dp(6));
+        upNext.setVisibility(GONE);
+        upNextLabel = upNext;
         header.addView(upNext, Ui.lin(Ui.MATCH, Ui.WRAP));
 
         details = new FeedList(c, true, item -> {
@@ -381,10 +468,18 @@ final class WatchLayout extends FrameLayout {
 
         // The mini bar: its left end is left free for the shrunken player.
         miniBar = Ui.row(c);
-        miniBar.setBackgroundColor(Ui.PANEL);
+        // YouTube's mini player: a grey bar with a thin red progress line along its bottom.
+        android.graphics.drawable.ClipDrawable red = new android.graphics.drawable.ClipDrawable(
+                new android.graphics.drawable.ColorDrawable(Ui.RED), Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL);
+        android.graphics.drawable.LayerDrawable miniBg = new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[] {
+                new android.graphics.drawable.ColorDrawable(Ui.SHEET), red});
+        miniBg.setLayerGravity(1, Gravity.BOTTOM | Gravity.FILL_HORIZONTAL);
+        miniBg.setLayerHeight(1, Ui.dp(2));
+        miniBar.setBackground(miniBg);
+        miniLineDrawable = red;
         LinearLayout texts = Ui.column(c);
         texts.setGravity(Gravity.CENTER_VERTICAL);
-        miniTitle = Ui.lines(Ui.text(c, 13, Ui.TEXT, true), 1);
+        miniTitle = Ui.lines(Ui.text(c, 14, Ui.TEXT, true), 1);
         texts.addView(miniTitle, Ui.lin(Ui.MATCH, Ui.WRAP));
         miniChannel = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
         miniChannel.setPadding(0, Ui.dp(4), 0, 0);
@@ -411,8 +506,18 @@ final class WatchLayout extends FrameLayout {
             public boolean step(int by) {
                 return WatchLayout.this.step(by);
             }
+
+            @Override
+            public void minimize() {
+                if (fullscreen) {
+                    WatchLayout.this.host.requestFullscreen(false);
+                } else {
+                    WatchLayout.this.minimize();
+                }
+            }
         });
         player.progress = controls;
+        controls.miniLine = miniLineDrawable;
         controls.mirror = musicPanel;
         playerFrame.addView(controls, new LayoutParams(Ui.MATCH, Ui.MATCH));
         // Not clickable, so touches still reach the player underneath.
@@ -495,10 +600,9 @@ final class WatchLayout extends FrameLayout {
     private String rating;
 
     private void showRating() {
-        paintPill(likeButton, "like".equals(rating));
-        paintPill(dislikeButton, "dislike".equals(rating));
-        ((TextView) likeButton.getChildAt(1)).setText("like".equals(rating) ? "Liked" : "Like");
-        ((TextView) dislikeButton.getChildAt(1)).setText("dislike".equals(rating) ? "Disliked" : "Dislike");
+        ((ImageView) likeButton.getChildAt(0)).setImageResource("like".equals(rating) ? R.drawable.ic_like_filled : R.drawable.ic_like_outline);
+        ((ImageView) dislikeButton.getChildAt(0)).setImageResource("dislike".equals(rating) ? R.drawable.ic_dislike_filled : R.drawable.ic_dislike_outline);
+        ((TextView) likeButton.getChildAt(1)).setText(likeCount != null ? likeCount : "Like");
     }
 
     /** Ask how the user rated this video (signed in only). */
@@ -610,7 +714,7 @@ final class WatchLayout extends FrameLayout {
             TextView t = Ui.lines(Ui.text(c, 13, Ui.TEXT, true), 2);
             t.setText(names[i]);
             card.addView(t, Ui.lin(Ui.dp(150), Ui.WRAP));
-            TextView when = Ui.text(c, 12, Ui.ACCENT, true);
+            TextView when = Ui.text(c, 12, Ui.LINK, true);
             when.setText(Ui.duration((int) seconds));
             when.setPadding(0, Ui.dp(6), 0, 0);
             card.addView(when);
@@ -1069,10 +1173,23 @@ final class WatchLayout extends FrameLayout {
             return;
         }
         title.setText(v.title);
-        String likes = page != null && !page.isNull("likes") ? Ui.count(page.optLong("likes")) + " likes" : null;
-        String m = Ui.join(v.views >= 0 ? Ui.count(v.views) + " views" : null, v.published, likes);
-        meta.setText(m);
-        meta.setVisibility(m.isEmpty() ? GONE : VISIBLE);
+        likeCount = page != null && !page.isNull("likes") ? Ui.count(page.optLong("likes")) : null;
+        showRating();
+        String m = Ui.join(v.views >= 0 ? Ui.count(v.views) + " views" : null, v.published);
+        android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(m.replace(" · ", "  "));
+        if (!v.music) {
+            int from = sb.length();
+            sb.append(sb.length() > 0 ? "  ...more" : "...more");
+            sb.setSpan(new android.text.style.ForegroundColorSpan(Ui.TEXT), from, sb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sb.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), from, sb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        meta.setText(sb);
+        meta.setVisibility(sb.length() == 0 ? GONE : VISIBLE);
+        String chId = v.channelId == null ? "" : v.channelId;
+        if (!chId.equals(subscribedFor)) {
+            subscribedFor = chId;
+            loadSubscribed(v);
+        }
         channelName.setText(v.channelName == null ? "" : v.channelName);
         channelRow.setVisibility(v.channelName == null ? GONE : VISIBLE);
         Images.load(channelAvatar, v.channelAvatar);
@@ -1083,9 +1200,13 @@ final class WatchLayout extends FrameLayout {
         description.setText(linked(d));
         bindChapters(page, d);
         descriptionOpen = false;
-        description.setMaxLines(2);
-        descriptionToggle.setText("Show more");
-        ((View) description.getParent()).setVisibility(d.isEmpty() ? GONE : VISIBLE);
+        description.setMaxLines(Integer.MAX_VALUE);
+        descriptionToggle.setText("Show less");
+        descriptionBox.setVisibility(GONE);
+        // Related videos are full cards, as on YouTube's phone app; the music queue stays a list.
+        details.setCompact(v.music);
+        upNextLabel.setVisibility(GONE);
+        subscribeButton.setVisibility(v.music ? GONE : VISIBLE);
         boolean music = v.music;
         musicTabs.setVisibility(music ? VISIBLE : GONE);
         commentsCard.setVisibility(music ? GONE : VISIBLE);

@@ -34,10 +34,16 @@ import java.util.List;
 public final class MainActivity extends Activity
         implements Nav, Core.Listener, Player.Listener, WatchLayout.Host, PlaybackService.Controller, SettingsSheet.Host {
     private static final int NAV_HEIGHT_DP = 56;
-    private static final int[] TAB_ICONS = {R.drawable.ic_home, R.drawable.ic_shorts, R.drawable.ic_subs, R.drawable.ic_library, R.drawable.ic_settings};
-    private static final String[] TAB_LABELS = {"Home", "Shorts", "Subscriptions", "Library", "Settings"};
+    /** YouTube's bottom bar: outline icons, filled for the tab on screen; the middle one is "Create". */
+    private static final int[] TAB_ICONS = {R.drawable.ic_home_outline, R.drawable.ic_shorts_outline, R.drawable.ic_add, R.drawable.ic_subs_outline, R.drawable.ic_person};
+    private static final int[] TAB_ICONS_ON = {R.drawable.ic_home_filled, R.drawable.ic_shorts_filled, R.drawable.ic_add, R.drawable.ic_subs_filled, R.drawable.ic_person};
+    private static final String[] TAB_LABELS = {"Home", "Shorts", "", "Subscriptions", "You"};
     private static final int TAB_COUNT = 5;
     private static final int TAB_SHORTS = 1;
+    private static final int TAB_CREATE = 2;
+    private static final int TAB_YOU = 4;
+    /** The account's picture in the "You" tab, as in YouTube's bar. */
+    private ImageView youAvatar;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private FrameLayout root;
@@ -60,6 +66,7 @@ public final class MainActivity extends Activity
     private int tabIndex = -1;
     private final List<Screen> stack = new ArrayList<>();
     private boolean watchOpen;
+    private Boolean accountFor;
     private boolean notificationShown;
     private boolean askedNotifications;
 
@@ -98,11 +105,26 @@ public final class MainActivity extends Activity
             LinearLayout item = Ui.column(this);
             item.setGravity(Gravity.CENTER);
             item.setBackground(Ui.rippleRound());
-            tabIcons[i] = Ui.icon(this, TAB_ICONS[i], Ui.MUTE);
-            item.addView(tabIcons[i], Ui.lin(Ui.dp(28), Ui.dp(26)));
-            tabTexts[i] = Ui.text(this, 10, Ui.MUTE, false);
+            tabIcons[i] = Ui.icon(this, TAB_ICONS[i], Ui.TEXT);
+            FrameLayout iconBox = new FrameLayout(this);
+            iconBox.addView(tabIcons[i], new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
+            if (i == TAB_YOU) {
+                youAvatar = new ImageView(this);
+                youAvatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                Ui.clipCircle(youAvatar);
+                youAvatar.setVisibility(View.GONE);
+                iconBox.addView(youAvatar, Ui.frame(Ui.dp(24), Ui.dp(24), Gravity.CENTER));
+            }
+            item.addView(iconBox, Ui.lin(Ui.dp(i == TAB_CREATE ? 40 : 28), Ui.dp(i == TAB_CREATE ? 40 : 26)));
+            if (i == TAB_CREATE) {
+                tabIcons[i].setBackground(Ui.rounded(Ui.PANEL, 20));
+            }
+            tabTexts[i] = Ui.text(this, 10, Ui.TEXT, false);
             tabTexts[i].setText(TAB_LABELS[i]);
-            tabTexts[i].setPadding(0, Ui.dp(3), 0, 0);
+            tabTexts[i].setPadding(0, Ui.dp(2), 0, 0);
+            if (i == TAB_CREATE) {
+                tabTexts[i].setVisibility(View.GONE);
+            }
             item.addView(tabTexts[i], Ui.lin(Ui.WRAP, Ui.WRAP));
             item.setContentDescription(TAB_LABELS[i]);
             item.setOnClickListener(v -> onTabTapped(index));
@@ -111,6 +133,7 @@ public final class MainActivity extends Activity
         FrameLayout navWrap = new FrameLayout(this);
         View line = new View(this);
         line.setBackgroundColor(Ui.LINE);
+        navLine = line;
         navWrap.addView(navBar, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
         navWrap.addView(line, Ui.frame(Ui.MATCH, Math.max(1, Ui.dp(0.75f)), Gravity.TOP));
         root.addView(navWrap, Ui.frame(Ui.MATCH, Ui.dp(NAV_HEIGHT_DP), Gravity.BOTTOM));
@@ -188,6 +211,7 @@ public final class MainActivity extends Activity
     }
 
     private View navBarWrap;
+    private View navLine;
     /** The tab to show after the activity is recreated for a theme change. */
     private static int restoreTab = -1;
 
@@ -392,16 +416,13 @@ public final class MainActivity extends Activity
                     tabs[i] = new FeedScreen(this, this, false);
                     break;
                 case TAB_SHORTS:
-                    tabs[i] = new ShortsScreen(this, player);
-                    break;
-                case 2:
-                    tabs[i] = new FeedScreen(this, this, true);
+                    tabs[i] = new ShortsScreen(this, this);
                     break;
                 case 3:
-                    tabs[i] = new LibraryScreen(this, this);
+                    tabs[i] = new FeedScreen(this, this, true);
                     break;
                 default:
-                    tabs[i] = new SettingsScreen(this, this);
+                    tabs[i] = new YouScreen(this, this);
             }
             tabs[i].view.setVisibility(View.GONE);
             content.addView(tabs[i].view, 0, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
@@ -410,6 +431,10 @@ public final class MainActivity extends Activity
     }
 
     private void onTabTapped(int i) {
+        if (!musicMode && i == TAB_CREATE) {
+            Toast.makeText(this, "Uploading is not part of this app.", Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (!stack.isEmpty()) {
             // A tab tap leaves whatever was pushed on top.
             while (!stack.isEmpty()) {
@@ -433,11 +458,7 @@ public final class MainActivity extends Activity
         final Screen old = tabIndex >= 0 ? tabs[tabIndex] : null;
         Screen next = tab(i);
         tabIndex = i;
-        for (int t = 0; t < TAB_COUNT; t++) {
-            int color = t == i ? Ui.ACCENT : Ui.MUTE;
-            tabIcons[t].setImageTintList(ColorStateList.valueOf(color));
-            tabTexts[t].setTextColor(color);
-        }
+        paintTabs(i);
         if (old != null && old != next) {
             old.view.animate().cancel();
             old.view.setVisibility(View.GONE);
@@ -454,6 +475,84 @@ public final class MainActivity extends Activity
         next.view.setTranslationY(Ui.dp(10));
         next.view.animate().alpha(1f).translationY(0).setDuration(Ui.FAST).setInterpolator(Ui.EASE_OUT).start();
         next.onShown();
+    }
+
+    /** The tab on screen has a filled icon; on Shorts the bar turns black, as in YouTube. */
+    private void paintTabs(int i) {
+        boolean shorts = !musicMode && i == TAB_SHORTS;
+        int bg = shorts ? 0xFF000000 : Ui.BG;
+        int fg = shorts ? 0xFFFFFFFF : Ui.TEXT;
+        navBar.setBackgroundColor(bg);
+        navLine.setVisibility(shorts ? View.GONE : View.VISIBLE);
+        if (!fullscreen) {
+            getWindow().setStatusBarColor(bg);
+            getWindow().setNavigationBarColor(bg);
+            getWindow().getDecorView().setSystemUiVisibility(shorts ? View.SYSTEM_UI_FLAG_VISIBLE : baseSystemUi());
+        }
+        for (int t = 0; t < TAB_COUNT; t++) {
+            if (!musicMode) {
+                tabIcons[t].setImageResource(t == i ? TAB_ICONS_ON[t] : TAB_ICONS[t]);
+            }
+            int color = musicMode ? (t == i ? Ui.TEXT : Ui.MUTE) : fg;
+            tabIcons[t].setImageTintList(ColorStateList.valueOf(color));
+            tabTexts[t].setTextColor(color);
+            tabTexts[t].setTypeface(android.graphics.Typeface.create(t == i ? "sans-serif-medium" : "sans-serif", android.graphics.Typeface.NORMAL));
+        }
+        if (!musicMode) {
+            tabIcons[TAB_CREATE].setBackground(Ui.rounded(shorts ? 0x33FFFFFF : Ui.PANEL, 20));
+        }
+        boolean avatar = !musicMode && youAvatar.getDrawable() != null;
+        youAvatar.setVisibility(avatar ? View.VISIBLE : View.GONE);
+        tabIcons[TAB_YOU].setVisibility(avatar ? View.INVISIBLE : View.VISIBLE);
+        if (avatar) {
+            youAvatar.setForeground(i == TAB_YOU ? ringed(fg) : null);
+        }
+    }
+
+    private android.graphics.drawable.Drawable ringed(int color) {
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        g.setStroke(Ui.dp(1.5f), color);
+        return g;
+    }
+
+    /** The signed-in account's name, handle and picture (the "You" tab). */
+    private void loadAccount() {
+        if (!Core.get().isSignedIn()) {
+            youAvatar.setImageDrawable(null);
+            YouScreen.account = null;
+            paintTabs(tabIndex);
+            return;
+        }
+        Core.get().call((e, err) -> {
+            org.json.JSONObject ok = e == null ? null : e.optJSONObject("ok");
+            if (ok == null) {
+                return;
+            }
+            YouScreen.account = ok;
+            Images.load(youAvatar, ok.optString("avatar"));
+            main.postDelayed(() -> paintTabs(tabIndex), 800);
+            if (videoTabs[TAB_YOU] != null) {
+                videoTabs[TAB_YOU].onCoreChanged();
+            }
+        }, "shorts", "op", "account");
+    }
+
+    @Override
+    public void openShort(String id) {
+        while (!stack.isEmpty()) {
+            removeTop(false);
+        }
+        if (watch.isExpanded()) {
+            watch.minimize();
+        }
+        ShortsScreen s = (ShortsScreen) tab(TAB_SHORTS);
+        s.openAt(id);
+        if (tabIndex == TAB_SHORTS) {
+            s.onShown();
+        } else {
+            selectTab(TAB_SHORTS);
+        }
     }
 
     private View below() {
@@ -575,6 +674,11 @@ public final class MainActivity extends Activity
 
     @Override
     public void onCoreChanged() {
+        Boolean in = Core.get().signedIn;
+        if (in != null && !in.equals(accountFor)) {
+            accountFor = in;
+            loadAccount();
+        }
         for (Screen[] set : new Screen[][] {videoTabs, musicTabs}) {
             for (Screen s : set) {
                 if (s != null) {
@@ -653,6 +757,8 @@ public final class MainActivity extends Activity
             }
             item.setVisibility(View.VISIBLE);
             tabIcons[i].setImageResource(musicMode ? MUSIC_ICONS[i] : TAB_ICONS[i]);
+            tabIcons[i].setBackground(!musicMode && i == TAB_CREATE ? Ui.rounded(Ui.PANEL, 20) : null);
+            tabTexts[i].setVisibility(!musicMode && i == TAB_CREATE ? View.GONE : View.VISIBLE);
             tabTexts[i].setText(musicMode ? MUSIC_LABELS[i] : TAB_LABELS[i]);
             item.setContentDescription(musicMode ? MUSIC_LABELS[i] : TAB_LABELS[i]);
         }

@@ -27,15 +27,21 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
 
         /** Go to the next (+1) or previous (-1) video. False if there is none. */
         boolean step(int by);
+
+        /** Shrink the video to the mini player (the chevron at the top left). */
+        void minimize();
     }
 
     private static final int RED = 0xFFFF0033;
     private static final int WHITE = 0xFFFFFFFF;
     private static final int HIDE_AFTER_MS = 3000;
     private static final int SKIP_S = 10;
+    private ImageView minimizeButton;
     private static final double HOLD_RATE = 2.0;
     /** Also told about progress (the music player's own controls). */
     Player.Progress mirror;
+    /** The red line along the mini player's bottom edge (its level is the position). */
+    android.graphics.drawable.Drawable miniLine;
     /** Music layout: the controls are under the artwork, not over it. */
     private boolean music;
 
@@ -89,7 +95,7 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
         this.player = player;
 
         chrome = new FrameLayout(c);
-        chrome.setBackgroundColor(0x73000000);
+        chrome.setBackgroundColor(0x66000000);
         addView(chrome, new LayoutParams(Ui.MATCH, Ui.MATCH));
 
         ImageView gear = button(c, R.drawable.ic_settings, "Playback settings", 48, v -> {
@@ -97,6 +103,9 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
             keep();
         });
         chrome.addView(gear, Ui.frame(Ui.dp(48), Ui.dp(48), Gravity.TOP | Gravity.END));
+        // YouTube's chevron: down to the mini player.
+        minimizeButton = button(c, R.drawable.ic_down, "Minimize", 48, v -> host.minimize());
+        chrome.addView(minimizeButton, Ui.frame(Ui.dp(48), Ui.dp(48), Gravity.TOP | Gravity.START));
 
         center = new LinearLayout(c);
         center.setGravity(Gravity.CENTER);
@@ -108,17 +117,19 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
             keep();
         });
         center.addView(previous, new LinearLayout.LayoutParams(Ui.dp(44), Ui.dp(44)));
-        center.addView(skipButton(c, R.drawable.ic_replay, "Back 10 seconds", -SKIP_S));
         play = button(c, R.drawable.ic_pause, "Pause", 72, v -> {
             togglePlay();
             keep();
         });
-        play.setScaleX(1.7f);
-        play.setScaleY(1.7f);
+        play.setScaleX(1.6f);
+        play.setScaleY(1.6f);
+        // A dark round backing, as YouTube's play button has.
+        FrameLayout playBox = new FrameLayout(c);
+        playBox.setBackground(Ui.rounded(0x59000000, 36));
+        playBox.addView(play, new LayoutParams(Ui.MATCH, Ui.MATCH));
         LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(Ui.dp(72), Ui.dp(72));
-        pl.leftMargin = pl.rightMargin = Ui.dp(14);
-        center.addView(play, pl);
-        center.addView(skipButton(c, R.drawable.ic_forward, "Forward 10 seconds", SKIP_S));
+        pl.leftMargin = pl.rightMargin = Ui.dp(40);
+        center.addView(playBox, pl);
         ImageView next = button(c, R.drawable.ic_next, "Next", 44, v -> {
             host.step(1);
             keep();
@@ -628,6 +639,9 @@ final class PlayerControls extends FrameLayout implements Player.Progress {
 
     @Override
     public void onProgress(double at, double total, double buffered, boolean isPaused, boolean isWaiting) {
+        if (miniLine != null) {
+            miniLine.setLevel(total > 0 ? (int) Math.max(0, Math.min(10000, at / total * 10000)) : 0);
+        }
         if (mirror != null) {
             mirror.onProgress(at, total, buffered, isPaused, isWaiting);
         }

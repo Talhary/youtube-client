@@ -15,6 +15,7 @@ pub mod proxy;
 pub mod remote;
 pub mod secure;
 pub mod service;
+pub mod shorts;
 pub mod streams;
 pub mod thumbs;
 pub mod update;

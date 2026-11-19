@@ -159,6 +159,23 @@ pub async fn fetch(http: &reqwest::Client, cookie: &str, feed: Feed) -> Result<(
     fetch_url(http, Some(cookie), feed.url(), feed).await
 }
 
+/// The signed-in home page, with its Shorts shelf (`[{id, title, views, thumb}]`).
+pub async fn fetch_home(http: &reqwest::Client, cookie: &str) -> Result<(Page, Option<More>, Dismiss, Vec<Value>), String> {
+    let html = get_page(http, Some(cookie), Feed::Home.url()).await?;
+    let (page, more, dismiss, data) = read_list(&html, Feed::Home)?;
+    Ok((page, more, dismiss, crate::shorts::shelf(&data)))
+}
+
+/// `Authorization` for a session's `Cookie` header value.
+pub fn sapisid_auth(cookie: &str) -> Option<String> {
+    sapisid_hash(cookie)
+}
+
+/// Every value under `key`, anywhere in `v`.
+pub fn find_all_pub(v: &Value, key: &str, hit: &mut dyn FnMut(&Value)) {
+    find_all(v, key, hit)
+}
+
 /// A page's source, signed in when `cookie` is given.
 async fn get_page(http: &reqwest::Client, cookie: Option<&str>, url: &str) -> Result<String, String> {
     let mut req = http
@@ -577,6 +594,34 @@ fn first<'a>(v: &'a Value, key: &str, depth: usize) -> Option<&'a Value> {
     }
 }
 
+/// The like count on a watch page: the exact number in the button's spoken label
+/// ("like this video along with 73,123 other people"), else its short title ("73K").
+fn like_count(data: &Value) -> Option<u32> {
+    let mut found = None;
+    find_all(data, "likeButtonViewModel", &mut |l| {
+        if found.is_some() {
+            return;
+        }
+        let mut label = None;
+        find_all(l, "accessibilityText", &mut |t| {
+            if label.is_none() {
+                label = t.as_str().map(str::to_string);
+            }
+        });
+        if let Some(digits) = label.as_deref().and_then(|t| t.split_whitespace().find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))) {
+            found = count(digits);
+        }
+        if found.is_none() {
+            find_all(l, "title", &mut |t| {
+                if found.is_none() {
+                    found = t.as_str().and_then(count);
+                }
+            });
+        }
+    });
+    found
+}
+
 fn watch_page(data: &Value, id: &str) -> Option<VideoPage> {
     let primary = first(data, "videoPrimaryInfoRenderer", 0)?;
     let secondary = first(data, "videoSecondaryInfoRenderer", 0);
@@ -615,7 +660,7 @@ fn watch_page(data: &Value, id: &str) -> Option<VideoPage> {
             watched: None,
         },
         description,
-        likes: None,
+        likes: like_count(data),
         related: Page { items: related, next: None },
     })
 }
@@ -1151,10 +1196,30 @@ pub async fn notifications(http: &reqwest::Client, cookie: &str) -> Result<Page,
 
 /// Is the user subscribed to a channel, and the choices of its bell (all, personalized,
 /// none) with the handle that sets each one.
+/// The subscription state of `channel` itself: a channel page also holds the states of the
+/// channels it features, so the entity is picked by its key (protobuf: field 2 = the channel
+/// id, then the state kind), not by order.
+fn subscription_of(data: &Value, channel: &str) -> Option<bool> {
+    use base64::Engine;
+    let mut raw = vec![0x12u8, channel.len() as u8];
+    raw.extend_from_slice(channel.as_bytes());
+    raw.extend_from_slice(&[0x20, 0x33, 0x28, 0x01]);
+    let key = base64::engine::general_purpose::STANDARD.encode(&raw);
+    let key_url = key.replace('=', "%3D");
+    let mutations = data.pointer("/frameworkUpdates/entityBatchUpdate/mutations")?.as_array()?;
+    mutations.iter().find_map(|m| {
+        let k = m.get("entityKey")?.as_str()?;
+        if k != key && k != key_url {
+            return None;
+        }
+        m.pointer("/payload/subscriptionStateEntity/subscribed")?.as_bool()
+    })
+}
+
 pub async fn channel_state(http: &reqwest::Client, cookie: &str, channel: &str) -> Result<Value, String> {
     let html = get_page(http, Some(cookie), &format!("https://www.youtube.com/channel/{channel}")).await?;
     let data = initial_data(&html).ok_or("YouTube's page had no channel data")?;
-    let subscribed = entity(&data, "subscriptionStateEntity", "subscribed").and_then(|v| v.as_bool());
+    let subscribed = subscription_of(&data, channel).or_else(|| entity(&data, "subscriptionStateEntity", "subscribed").and_then(|v| v.as_bool()));
     let mut bell: Vec<Value> = Vec::new();
     fn walk(v: &Value, label: &str, icon: &str, depth: usize, out: &mut Vec<Value>) {
         if depth > 90 {
@@ -1196,7 +1261,20 @@ pub async fn channel_state(http: &reqwest::Client, cookie: &str, channel: &str) 
             let state = states.iter().find(|s| s.get("stateId").and_then(Value::as_u64) == Some(id))?;
             first(state, "iconType", 0)?.as_str().map(str::to_string)
         });
-    Ok(serde_json::json!({"subscribed": subscribed, "bell": bell, "bell_now": current}))
+    // The header's "4.34M subscribers" and "865 videos", as YouTube writes them.
+    let (mut subs_text, mut videos_text) = (None::<String>, None::<String>);
+    find_all(&data, "metadataParts", &mut |parts| {
+        for p in parts.as_array().into_iter().flatten() {
+            if let Some(t) = p.pointer("/text/content").and_then(Value::as_str) {
+                if subs_text.is_none() && t.contains("subscriber") {
+                    subs_text = Some(t.to_string());
+                } else if videos_text.is_none() && (t.ends_with(" videos") || t.ends_with(" video")) {
+                    videos_text.get_or_insert_with(|| t.to_string());
+                }
+            }
+        }
+    });
+    Ok(serde_json::json!({"subscribed": subscribed, "bell": bell, "bell_now": current, "subscribers_text": subs_text, "videos_text": videos_text}))
 }
 
 /// Choose a channel's bell setting with a handle from [`channel_state`].

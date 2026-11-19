@@ -257,7 +257,7 @@ final class MusicLibraryScreen extends Screen {
         list.setEmptyText("Nothing here yet.");
         list.setSource(done -> {
             if (!Core.get().isSignedIn()) {
-                done.page(null, "Sign in from the Library tab in YouTube to see your music library.");
+                done.page(null, "Sign in from the You tab in YouTube to see your music library.");
                 return;
             }
             // Liked songs play as one list, like a playlist.

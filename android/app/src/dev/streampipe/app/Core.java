@@ -136,6 +136,40 @@ final class Core implements Native.Listener {
         Item attached;
 
         /** "Channel · 1.2M views · 3 days ago", leaving out what is unknown. */
+        /** YouTube's short card line: "Fireship  ▷2.4M  2y ago". */
+        String shortMeta() {
+            StringBuilder sb = new StringBuilder();
+            if (channelName != null && !channelName.isEmpty()) {
+                sb.append(channelName);
+            }
+            if (views >= 0) {
+                sb.append(sb.length() > 0 ? "  " : "").append(live ? Ui.count(views) + " watching" : "▷" + Ui.count(views));
+            }
+            if (published != null && !published.isEmpty()) {
+                sb.append(sb.length() > 0 ? "  " : "").append(shortAgo(published));
+            }
+            return sb.toString();
+        }
+
+        /** "7 years ago" → "7y ago", as YouTube's app writes it. */
+        static String shortAgo(String s) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+) (second|minute|hour|day|week|month|year)s? ago").matcher(s);
+            if (!m.find()) {
+                return s;
+            }
+            String unit;
+            switch (m.group(2)) {
+                case "second": unit = "s"; break;
+                case "minute": unit = "m"; break;
+                case "hour": unit = "h"; break;
+                case "day": unit = "d"; break;
+                case "week": unit = "w"; break;
+                case "month": unit = "mo"; break;
+                default: unit = "y";
+            }
+            return s.substring(0, m.start()) + m.group(1) + unit + " ago" + s.substring(m.end());
+        }
+
         String meta(boolean withChannel) {
             return Ui.join(withChannel ? channelName : null, views >= 0 ? Ui.count(views) + " views" : null, published);
         }

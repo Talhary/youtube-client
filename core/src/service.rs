@@ -56,6 +56,9 @@ pub enum Command {
     HistoryActions { req: ReqId },
     /// Send one of YouTube's feedback handles (clear or pause history).
     Feedback { req: ReqId, token: String },
+    /// Shorts: `op` "feed" (optional `id` to start from), "more" (`token`), "info" (`id`,
+    /// `params`) or "shelf" (the home page's Shorts). Answered as an action.
+    Shorts { req: ReqId, op: String, id: Option<String>, params: Option<String>, token: Option<String> },
     /// Tell YouTube a video in the home feed is not interesting.
     NotInterested { req: ReqId, id: String },
     /// Videos on screen in a list: resolve their streams and read their details now, so
@@ -443,6 +446,8 @@ struct State {
     tracking: Mutex<HashMap<String, (String, String)>>,
     /// The user's rating of videos whose page was read ("like", "dislike", "none").
     ratings: Mutex<HashMap<String, String>>,
+    /// The Shorts shelf of the last home page read.
+    home_shorts: Mutex<Vec<serde_json::Value>>,
     /// "Not interested" handles of listed videos, by video id.
     dismiss: Mutex<HashMap<String, String>>,
     /// "Load more" handles of YouTube Music pages, searches and queues.
@@ -571,6 +576,7 @@ impl Core {
                 stream_prefetching: Mutex::new(std::collections::HashSet::new()),
                 stream_slots: tokio::sync::Semaphore::new(2),
                 ratings: Mutex::new(HashMap::new()),
+                home_shorts: Mutex::new(Vec::new()),
                 dismiss: Mutex::new(HashMap::new()),
                 music_cursors: Mutex::new(HashMap::new()),
                 extras: Mutex::new(HashMap::new()),
@@ -829,8 +835,11 @@ async fn web_feed(st: &State, feed: crate::webfeed::Feed) -> Result<Page, String
     let cookie = session_cookie(st).ok_or_else(|| ApiError::NeedsLogin.to_string())?;
     if feed == crate::webfeed::Feed::Home {
         // Both at once: the home page, and what the account has watched lately.
-        let (home, _) = tokio::join!(crate::webfeed::fetch(&st.http, &cookie, feed), sync_seen(st, &cookie));
-        let (mut page, more, dismiss) = home?;
+        let (home, _) = tokio::join!(crate::webfeed::fetch_home(&st.http, &cookie), sync_seen(st, &cookie));
+        let (mut page, more, dismiss, shelf) = home?;
+        if !shelf.is_empty() {
+            *st.home_shorts.lock() = shelf;
+        }
         remember_dismiss(st, dismiss);
         drop_seen(st, &mut page);
         return Ok(with_web_cursor(st, page, more));
@@ -1210,6 +1219,23 @@ async fn handle(st: Arc<State>, cmd: Command) {
                 crate::webfeed::create_playlist(&http, &c, &title, &privacy, video.as_deref()).await.map(|id| serde_json::json!({"id": id}))
             })
             .await;
+            emit(Event::Action { req, result })
+        }
+        Command::Shorts { req, op, id, params, token } => {
+            let cookie = session_cookie(&st);
+            let c = cookie.as_deref();
+            let result = match op.as_str() {
+                "feed" => crate::shorts::feed(&st.http, c, id.as_deref()).await,
+                "more" => crate::shorts::more(&st.http, c, token.as_deref().unwrap_or("")).await,
+                "info" => crate::shorts::info(&st.http, c, id.as_deref().unwrap_or(""), params.as_deref().unwrap_or("")).await,
+                "shelf" => Ok(serde_json::Value::Array(st.home_shorts.lock().clone())),
+                // Not a Short, but the same kind of page-API read: the account for "You".
+                "account" => match c {
+                    Some(c) => crate::shorts::account(&st.http, c).await,
+                    None => Err(ApiError::NeedsLogin.to_string()),
+                },
+                other => Err(format!("unknown Shorts request {other}")),
+            };
             emit(Event::Action { req, result })
         }
         Command::HistoryActions { req } => {

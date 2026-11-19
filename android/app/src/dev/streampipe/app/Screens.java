@@ -71,6 +71,9 @@ interface Nav {
     void queueChanged();
 
     void toast(String text);
+
+    /** Show the Shorts tab starting at this Short. */
+    void openShort(String id);
 }
 
 /** One page of the app: a view plus a few hooks. */
@@ -114,7 +117,7 @@ abstract class Screen {
     /** A row of choice chips (as above YouTube's feeds); the chosen one is filled. */
     static android.widget.HorizontalScrollView chips(Context c, String[] labels, int selected, final Sheet.Pick pick) {
         final LinearLayout row = Ui.row(c);
-        row.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
+        row.setPadding(Ui.dp(12), Ui.dp(4), Ui.dp(12), Ui.dp(12));
         final int[] chosen = {selected};
         final Runnable paint = () -> {
             for (int i = 0; i < row.getChildCount(); i++) {
@@ -127,9 +130,9 @@ abstract class Screen {
         };
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
-            TextView t = Ui.text(c, 13, Ui.TEXT, true);
+            TextView t = Ui.text(c, 14, Ui.TEXT, true);
             t.setText(labels[i]);
-            t.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
+            t.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
             t.setOnClickListener(v -> {
                 if (chosen[0] != index) {
                     chosen[0] = index;
@@ -172,19 +175,8 @@ final class FeedScreen extends Screen {
 
     FeedScreen(final Context c, final Nav nav, boolean subscriptions) {
         this.subscriptions = subscriptions;
-        SpannableString logo = new SpannableString("StreamPipe");
-        logo.setSpan(new ForegroundColorSpan(Ui.ACCENT), 6, 10, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        TextView title = Ui.text(c, 20, Ui.TEXT, true);
-        title.setText(subscriptions ? "Subscriptions" : logo);
-        if (!subscriptions) {
-            // The logo switches to YouTube Music, as the two official apps are one here.
-            SpannableString both = new SpannableString("StreamPipe  ⇄ Music");
-            both.setSpan(new ForegroundColorSpan(Ui.ACCENT), 6, 10, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            both.setSpan(new ForegroundColorSpan(Ui.MUTE), 10, both.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            title.setText(both);
-            title.setContentDescription("YouTube. Tap to switch to YouTube Music");
-            title.setOnClickListener(v -> nav.setMusicMode(true));
-        }
+        this.nav = nav;
+        View logo = logo(c, nav);
         list = new FeedList(c, false, nav::open);
         // "Not interested" applies to what YouTube recommends.
         list.setMenu(nav, !subscriptions);
@@ -198,30 +190,176 @@ final class FeedScreen extends Screen {
                     list.scrollToTop();
                 }
             }));
+        } else {
+            channels = Ui.row(c);
+            channels.setPadding(Ui.dp(8), Ui.dp(4), Ui.dp(8), Ui.dp(8));
+            android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(c);
+            hs.setHorizontalScrollBarEnabled(false);
+            hs.addView(channels);
+            list.setHeader(hs);
         }
         list.setEmptyText(subscriptions ? "No recent videos from your subscriptions." : "Nothing to show right now.");
         list.setSource(r -> {
             if (!subscriptions && !category.isEmpty()) {
                 Core.get().call((e, err) -> FeedList.deliver(e, err, r), "explore", "category", category);
             } else {
-                Core.get().call((e, err) -> FeedList.deliver(e, err, r), subscriptions ? "feed" : "home");
+                Core.get().call((e, err) -> {
+                    FeedList.deliver(e, err, r);
+                    if (!subscriptions && err == null) {
+                        loadShelf(c);
+                    }
+                }, subscriptions ? "feed" : "home");
+            }
+            if (subscriptions) {
+                loadChannels(c);
             }
         });
-        bell = Ui.iconButton(c, R.drawable.ic_bell, "Notifications", v -> nav.push(ListScreen.notifications(c, nav)));
-        View bar = subscriptions
-                ? bar(c, nav, false, title,
-                        Ui.iconButton(c, R.drawable.ic_refresh, "Refresh", v -> reload()),
-                        Ui.iconButton(c, R.drawable.ic_search, "Search", v -> nav.push(new SearchScreen(c, nav))))
-                : bar(c, nav, false, title, bell,
-                        Ui.iconButton(c, R.drawable.ic_refresh, "Refresh", v -> reload()),
-                        Ui.iconButton(c, R.drawable.ic_search, "Search", v -> nav.push(new SearchScreen(c, nav))));
-        view = page(c, bar, list);
+        bell = Ui.iconButton(c, R.drawable.ic_bell_outline, "Notifications", v -> nav.push(ListScreen.notifications(c, nav)));
+        View bar = bar(c, nav, false, logo, bell,
+                Ui.iconButton(c, R.drawable.ic_search_outline, "Search", v -> nav.push(new SearchScreen(c, nav))));
+        LinearLayout col = Ui.column(c);
+        col.setBackgroundColor(Ui.BG);
+        col.addView(bar);
+        col.addView(list, new LinearLayout.LayoutParams(Ui.MATCH, 0, 1f));
+        view = col;
         onCoreChanged();
+    }
+
+    private final Nav nav;
+    private LinearLayout channels;
+
+    /** YouTube's logo: the red play button and the word mark. Tapping it switches to YouTube Music. */
+    static View logo(Context c, final Nav nav) {
+        LinearLayout l = Ui.row(c);
+        ImageView mark = new ImageView(c);
+        mark.setImageResource(R.drawable.ic_yt_logo);
+        mark.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        l.addView(mark, Ui.lin(Ui.dp(30), Ui.dp(22)));
+        TextView word = Ui.text(c, 20, Ui.TEXT, false);
+        word.setText("YouTube");
+        word.setTypeface(android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.BOLD));
+        word.setLetterSpacing(-0.04f);
+        word.setPadding(Ui.dp(2), 0, 0, Ui.dp(1));
+        l.addView(word, Ui.lin(Ui.WRAP, Ui.WRAP));
+        l.setContentDescription("YouTube. Tap to switch to YouTube Music");
+        l.setOnClickListener(v -> nav.setMusicMode(true));
+        FrameLayout wrap = new FrameLayout(c);
+        wrap.addView(l, Ui.frame(Ui.WRAP, Ui.WRAP, Gravity.CENTER_VERTICAL | Gravity.START));
+        return wrap;
+    }
+
+    /** The Shorts shelf YouTube puts in Home, from the same home page. */
+    private void loadShelf(final Context c) {
+        Core.get().call((e, err) -> {
+            JSONArray a = e == null ? null : e.optJSONArray("ok");
+            if (a == null || a.length() == 0) {
+                list.setInline(null, 0);
+                return;
+            }
+            list.setInline(shelf(c, nav, a), 2);
+        }, "shorts", "op", "shelf");
+    }
+
+    static View shelf(final Context c, final Nav nav, JSONArray a) {
+        LinearLayout col = Ui.column(c);
+        col.setPadding(0, Ui.dp(4), 0, Ui.dp(22));
+        LinearLayout head = Ui.row(c);
+        head.setPadding(Ui.dp(14), Ui.dp(6), Ui.dp(12), Ui.dp(12));
+        ImageView mark = new ImageView(c);
+        mark.setImageResource(R.drawable.ic_shorts_logo);
+        head.addView(mark, Ui.lin(Ui.dp(28), Ui.dp(28)));
+        TextView t = Ui.text(c, 19, Ui.TEXT, true);
+        t.setText("Shorts");
+        t.setPadding(Ui.dp(10), 0, 0, 0);
+        head.addView(t, Ui.weight(Ui.WRAP));
+        col.addView(head);
+        LinearLayout row = Ui.row(c);
+        row.setGravity(Gravity.TOP);
+        row.setPadding(Ui.dp(12), 0, Ui.dp(8), 0);
+        int screen = Math.round(c.getResources().getDisplayMetrics().widthPixels);
+        int w = Math.min(Ui.dp(190), (screen - Ui.dp(12 + 8 + 4)) / 2);
+        for (int i = 0; i < a.length(); i++) {
+            final JSONObject o = a.optJSONObject(i);
+            if (o == null) {
+                continue;
+            }
+            FrameLayout card = new FrameLayout(c);
+            card.setBackgroundColor(Ui.PANEL);
+            Ui.clipRound(card, 10);
+            card.setForeground(Ui.ripple());
+            ImageView img = new ImageView(c);
+            img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            card.addView(img, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
+            Images.load(img, o.optString("thumb"));
+            View shade = new View(c);
+            shade.setBackground(new android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
+                    new int[] {0xB0000000, 0x00000000}));
+            card.addView(shade, Ui.frame(Ui.MATCH, Ui.dp(110), Gravity.BOTTOM));
+            LinearLayout text = Ui.column(c);
+            text.setPadding(Ui.dp(10), 0, Ui.dp(10), Ui.dp(10));
+            TextView title = Ui.lines(Ui.text(c, 14, 0xFFFFFFFF, true), 2);
+            title.setText(o.optString("title"));
+            title.setShadowLayer(3, 0, 1, 0x99000000);
+            title.setLineSpacing(Ui.dp(1), 1f);
+            text.addView(title);
+            TextView views = Ui.lines(Ui.text(c, 12, 0xFFFFFFFF, false), 1);
+            views.setText(o.optString("views"));
+            views.setPadding(0, Ui.dp(4), 0, 0);
+            text.addView(views);
+            card.addView(text, Ui.frame(Ui.MATCH, Ui.WRAP, Gravity.BOTTOM));
+            ImageView more = Ui.icon(c, R.drawable.ic_more, 0xFFFFFFFF);
+            card.addView(more, Ui.frame(Ui.dp(32), Ui.dp(32), Gravity.TOP | Gravity.END));
+            card.setOnClickListener(v -> nav.openShort(o.optString("id")));
+            LinearLayout.LayoutParams lp = Ui.lin(w, Math.round(w * 16f / 9f));
+            lp.rightMargin = Ui.dp(4);
+            row.addView(card, lp);
+        }
+        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(c);
+        hs.setHorizontalScrollBarEnabled(false);
+        hs.addView(row);
+        col.addView(hs);
+        return col;
+    }
+
+    /** Subscriptions: the channels as a row of round pictures above the videos. */
+    private void loadChannels(final Context c) {
+        if (channels == null || !Core.get().isSignedIn()) {
+            return;
+        }
+        Core.get().call((e, err) -> {
+            if (err != null || e == null) {
+                return;
+            }
+            Core.Page page = Core.Page.parse(e.optJSONObject("ok"));
+            channels.removeAllViews();
+            for (final Core.Item ch : page.items) {
+                if (ch.type != Core.Item.CHANNEL) {
+                    continue;
+                }
+                LinearLayout cell = Ui.column(c);
+                cell.setGravity(Gravity.CENTER_HORIZONTAL);
+                cell.setPadding(Ui.dp(6), Ui.dp(4), Ui.dp(6), Ui.dp(4));
+                cell.setBackground(Ui.rippleRound());
+                ImageView pic = new ImageView(c);
+                pic.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                pic.setBackgroundColor(Ui.PANEL);
+                Ui.clipCircle(pic);
+                Images.load(pic, ch.thumb);
+                cell.addView(pic, Ui.lin(Ui.dp(56), Ui.dp(56)));
+                TextView n = Ui.lines(Ui.text(c, 11, Ui.MUTE, false), 1);
+                n.setText(ch.title);
+                n.setGravity(Gravity.CENTER);
+                n.setPadding(0, Ui.dp(6), 0, 0);
+                cell.addView(n, Ui.lin(Ui.dp(64), Ui.WRAP));
+                cell.setOnClickListener(v -> nav.open(ch));
+                channels.addView(cell);
+            }
+        }, "subscriptions");
     }
 
     private void reload() {
         if (subscriptions && !Core.get().isSignedIn()) {
-            list.showMessage("Sign in from the Library tab to see videos from your subscriptions.", false);
+            list.showMessage("Sign in from the You tab to see videos from your subscriptions.", false);
         } else {
             list.load();
         }
@@ -240,7 +378,12 @@ final class FeedScreen extends Screen {
 
     @Override
     void onReselected() {
-        list.scrollToTop();
+        // As on YouTube: at the top, a second tap reloads; elsewhere it goes back to the top.
+        if (list.atTop()) {
+            reload();
+        } else {
+            list.scrollToTop();
+        }
     }
 }
 
@@ -575,7 +718,7 @@ final class SearchScreen extends Screen {
         fl.rightMargin = Ui.dp(4);
         field.setLayoutParams(fl);
 
-        results = new FeedList(c, true, nav::open);
+        results = new FeedList(c, false, nav::open);
         results.setMenu(nav, false);
         results.setSource(r -> Core.get().call((e, err) -> FeedList.deliver(e, err, r), "search", "query", query, "filter", filterJson()));
         results.showMessage("Search for videos, channels and playlists.", false);
@@ -935,7 +1078,7 @@ final class SettingsScreen extends Screen {
         ScrollView scroll = new ScrollView(c);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.addView(col);
-        view = page(c, bar(c, nav, false, barTitle(c, "Settings")), scroll);
+        view = page(c, bar(c, nav, !nav.musicMode(), barTitle(c, "Settings")), scroll);
         onCoreChanged();
     }
 
@@ -985,90 +1128,5 @@ final class SettingsScreen extends Screen {
     @Override
     void onShown() {
         onCoreChanged();
-    }
-}
-
-/**
- * Shorts: YouTube's own Shorts feed in a full-height web view, signed in with the same
- * session and carrying the same ad rules as the player. Swiping moves between Shorts.
- */
-final class ShortsScreen extends Screen {
-    private final android.webkit.WebView web;
-    private boolean loaded;
-    private boolean visible;
-
-    @android.annotation.SuppressLint("SetJavaScriptEnabled")
-    ShortsScreen(Context c, Player player) {
-        web = new android.webkit.WebView(c);
-        web.setBackgroundColor(0xFF000000);
-        android.webkit.WebSettings s = web.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        s.setSupportMultipleWindows(false);
-        s.setTextZoom(100);
-        s.setUserAgentString(player.userAgent());
-        android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
-        web.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        web.setVerticalScrollBarEnabled(false);
-        web.setWebViewClient(player.newPageClient("{\"shorts\":true}"));
-        web.setWebChromeClient(new android.webkit.WebChromeClient() {
-            private android.graphics.Bitmap blank;
-
-            @Override
-            public android.graphics.Bitmap getDefaultVideoPoster() {
-                if (blank == null) {
-                    blank = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888);
-                }
-                return blank;
-            }
-        });
-        FrameLayout frame = new FrameLayout(c);
-        frame.setBackgroundColor(0xFF000000);
-        frame.addView(web, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
-        view = frame;
-    }
-
-    @Override
-    void onShown() {
-        visible = true;
-        web.onResume();
-        if (!loaded) {
-            loaded = true;
-            web.loadUrl("https://m.youtube.com/shorts/");
-        } else {
-            web.evaluateJavascript("window.__sp&&window.__sp.cmd('play')", null);
-        }
-    }
-
-    @Override
-    void onHidden() {
-        if (!visible) {
-            return;
-        }
-        visible = false;
-        // Stop the sound first; pausing the view alone can leave audio running briefly.
-        web.evaluateJavascript("window.__sp&&window.__sp.cmd('pause')", null);
-        web.onPause();
-    }
-
-    /** Tapping the tab again starts the feed over. */
-    @Override
-    void onReselected() {
-        web.loadUrl("https://m.youtube.com/shorts/");
-    }
-
-    /** Back inside the feed goes to the previous Short. */
-    boolean goBack() {
-        if (web.canGoBack()) {
-            web.goBack();
-            return true;
-        }
-        return false;
-    }
-
-    void destroy() {
-        web.stopLoading();
-        web.destroy();
     }
 }

@@ -54,7 +54,81 @@ final class FeedList extends FrameLayout {
         }
     }
 
-    private static final int BIG = 0, COMPACT = 1, CHANNEL = 2, PLAYLIST = 3, POST = 4;
+    private static final int BIG = 0, COMPACT = 1, CHANNEL = 2, PLAYLIST = 3, POST = 4, INLINE = 5, PAIR = 6;
+    /** Big cards per row: two on wide screens (600dp and up), as YouTube lays them out there. */
+    private int columns = 1;
+    /** List rows: item indexes ([i], or [i, j] for two cards side by side); [-1] is the inline view. */
+    private final List<int[]> rows = new ArrayList<>();
+
+    /** Rebuild the rows from the items and redraw. */
+    private void refresh() {
+        rows.clear();
+        boolean inl = hasInline();
+        for (int i = 0; i < items.size(); ) {
+            if (inl && i == inlineAt) {
+                rows.add(new int[] {-1});
+                inl = false;
+            }
+            int t = cellType(items.get(i));
+            boolean pair = t == BIG && columns > 1 && i + 1 < items.size() && cellType(items.get(i + 1)) == BIG
+                    && !(inl && i + 1 == inlineAt);
+            if (pair) {
+                rows.add(new int[] {i, i + 1});
+                i += 2;
+            } else {
+                rows.add(new int[] {i});
+                i++;
+            }
+        }
+        adapter.notifyDataSetChanged();
+    }
+
+    private int cellType(Core.Item item) {
+        switch (item.type) {
+            case Core.Item.CHANNEL:
+                return CHANNEL;
+            case Core.Item.PLAYLIST:
+                // Full cards in big lists (Home, Search), as YouTube shows mixes and playlists.
+                return compact ? PLAYLIST : BIG;
+            case Core.Item.POST:
+                return POST;
+            default:
+                return compact ? COMPACT : BIG;
+        }
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int ow, int oh) {
+        super.onSizeChanged(w, h, ow, oh);
+        int want = !compact && w / getResources().getDisplayMetrics().density >= 560 ? 2 : 1;
+        if (want != columns) {
+            columns = want;
+            post(this::refresh);
+        }
+    }
+    /** A view placed among the rows (Home's Shorts shelf) and the row it goes before. */
+    private View inline;
+    private int inlineAt;
+
+    void setInline(View v, int at) {
+        inline = v;
+        inlineAt = at;
+        refresh();
+    }
+
+    private boolean hasInline() {
+        return inline != null && items.size() > inlineAt;
+    }
+
+    /** The (first) item at a list position, or -1 for the inline view. */
+    private int itemIndex(int position) {
+        return position >= 0 && position < rows.size() ? rows.get(position)[0] : -1;
+    }
+
+    /** At the top of the list (nothing scrolled away). */
+    boolean atTop() {
+        return list.getFirstVisiblePosition() == 0 && (list.getChildCount() == 0 || list.getChildAt(0).getTop() >= list.getPaddingTop());
+    }
     /** Set to give video rows a "more" menu (⋮ and long press). */
     private Nav menu;
     /** The menu offers "Not interested" (feeds YouTube recommends from). */
@@ -68,10 +142,19 @@ final class FeedList extends FrameLayout {
     /** Take an item out of the list (after "Not interested"). */
     private void remove(Core.Item item) {
         items.remove(item);
-        adapter.notifyDataSetChanged();
+        refresh();
     }
 
-    private final boolean compact;
+    private boolean compact;
+
+    /** Small rows (true) or full cards; changes how the rows are drawn from now on. */
+    void setCompact(boolean on) {
+        if (on != compact) {
+            compact = on;
+            columns = !on && getWidth() / getResources().getDisplayMetrics().density >= 560 ? 2 : 1;
+            refresh();
+        }
+    }
     private final Host host;
     private final ListView list;
     private final View footer;
@@ -175,7 +258,8 @@ final class FeedList extends FrameLayout {
         dropCursor();
         items.clear();
         seen.clear();
-        adapter.notifyDataSetChanged();
+        inline = null;
+        refresh();
         loadingMore = false;
         footer.setVisibility(GONE);
         message.setVisibility(GONE);
@@ -213,7 +297,16 @@ final class FeedList extends FrameLayout {
         int first = list.getFirstVisiblePosition() - list.getHeaderViewsCount();
         int last = list.getLastVisiblePosition() - list.getHeaderViewsCount();
         org.json.JSONArray ids = new org.json.JSONArray();
-        for (int i = Math.max(0, first); i <= last && i < items.size() && ids.length() < 4; i++) {
+        List<Integer> visible = new ArrayList<>();
+        for (int p = Math.max(0, first); p <= last && p < rows.size(); p++) {
+            for (int i : rows.get(p)) {
+                visible.add(i);
+            }
+        }
+        for (int i : visible) {
+            if (i < 0 || i >= items.size() || ids.length() >= 4) {
+                continue;
+            }
             Core.Item it = items.get(i);
             if (it.type == Core.Item.VIDEO && !it.live && it.localUri == null) {
                 ids.put(it.id);
@@ -230,7 +323,7 @@ final class FeedList extends FrameLayout {
         busy.setVisibility(GONE);
         items.clear();
         seen.clear();
-        adapter.notifyDataSetChanged();
+        refresh();
         messageText.setText(text);
         retry.setVisibility(canRetry ? VISIBLE : GONE);
         message.setVisibility(VISIBLE);
@@ -243,7 +336,7 @@ final class FeedList extends FrameLayout {
             }
         }
         next = page.next;
-        adapter.notifyDataSetChanged();
+        refresh();
     }
 
     private void loadMore() {
@@ -337,12 +430,13 @@ final class FeedList extends FrameLayout {
     private final class Adapter extends BaseAdapter {
         @Override
         public int getCount() {
-            return items.size();
+            return rows.size();
         }
 
         @Override
         public Core.Item getItem(int position) {
-            return items.get(position);
+            int i = itemIndex(position);
+            return i < 0 ? null : items.get(i);
         }
 
         @Override
@@ -352,35 +446,59 @@ final class FeedList extends FrameLayout {
 
         @Override
         public int getViewTypeCount() {
-            return 5;
+            return 7;
         }
 
         @Override
         public int getItemViewType(int position) {
-            switch (items.get(position).type) {
-                case Core.Item.CHANNEL:
-                    return CHANNEL;
-                case Core.Item.PLAYLIST:
-                    return PLAYLIST;
-                case Core.Item.POST:
-                    return POST;
-                default:
-                    return compact ? COMPACT : BIG;
+            int[] row = rows.get(position);
+            if (row[0] < 0) {
+                return INLINE;
             }
+            return row.length == 2 ? PAIR : cellType(items.get(row[0]));
         }
 
         @Override
         public View getView(int position, View view, ViewGroup parent) {
-            final Core.Item item = items.get(position);
             int type = getItemViewType(position);
+            if (type == INLINE) {
+                if (inline.getParent() instanceof ViewGroup && inline.getParent() != parent) {
+                    ((ViewGroup) inline.getParent()).removeView(inline);
+                }
+                return inline;
+            }
+            int[] row = rows.get(position);
+            if (type == PAIR) {
+                LinearLayout pair = (LinearLayout) view;
+                if (pair == null) {
+                    pair = Ui.row(getContext());
+                    pair.setGravity(Gravity.TOP);
+                    pair.setPadding(Ui.dp(10), 0, Ui.dp(10), 0);
+                    for (int k = 0; k < 2; k++) {
+                        View cell = bigRow();
+                        cell.setPadding(Ui.dp(6), 0, Ui.dp(6), Ui.dp(20));
+                        Ui.clipRound(((LinearLayout) cell).getChildAt(0), 12);
+                        pair.addView(cell, Ui.weight(Ui.WRAP));
+                    }
+                }
+                bindCell(pair.getChildAt(0), items.get(row[0]), BIG);
+                bindCell(pair.getChildAt(1), items.get(row[1]), BIG);
+                return pair;
+            }
+            final Core.Item item = items.get(row[0]);
             if (view == null) {
                 view = type == BIG ? bigRow() : type == CHANNEL ? channelRow() : type == POST ? postRow() : sideRow(type == PLAYLIST);
             }
+            bindCell(view, item, type);
+            return view;
+        }
+
+        private void bindCell(View view, final Core.Item item, int type) {
             Row r = (Row) view.getTag();
             if (type == POST) {
                 bindPost(r, item);
                 view.setOnClickListener(item.attached == null ? null : v -> host.open(item.attached));
-                return view;
+                return;
             }
             Images.load(r.image, item.thumb);
             r.title.setText(item.title);
@@ -390,6 +508,10 @@ final class FeedList extends FrameLayout {
             }
             if (r.more != null) {
                 boolean on = menu != null && item.type == Core.Item.VIDEO;
+                if (type == BIG && item.type == Core.Item.PLAYLIST) {
+                    on = false;
+                    r.more.setVisibility(GONE);
+                }
                 r.more.setVisibility(on ? VISIBLE : GONE);
                 r.more.setOnClickListener(on ? v -> openMenu(item) : null);
             }
@@ -403,7 +525,15 @@ final class FeedList extends FrameLayout {
             }
             switch (type) {
                 case BIG:
-                    r.line1.setText(item.meta(true));
+                    if (item.type == Core.Item.PLAYLIST) {
+                        r.line1.setText(Ui.join(item.channelName, "Playlist"));
+                        r.badge.setText(item.videoCount >= 0 ? "\u2261  " + item.videoCount + " videos" : "Mix");
+                        r.badge.setBackground(Ui.rounded(0xCC000000, 4));
+                        r.badge.setVisibility(VISIBLE);
+                        r.avatar.setVisibility(GONE);
+                        break;
+                    }
+                    r.line1.setText(item.shortMeta());
                     badge(r.badge, item);
                     // The channel's picture sits beside the title, as on YouTube.
                     r.avatar.setVisibility(item.channelAvatar == null ? GONE : VISIBLE);
@@ -425,7 +555,6 @@ final class FeedList extends FrameLayout {
             }
             view.setContentDescription(item.title);
             view.setOnClickListener(v -> host.open(item));
-            return view;
         }
 
         private void openMenu(final Core.Item item) {
@@ -496,7 +625,7 @@ final class FeedList extends FrameLayout {
             r.line2.setLineSpacing(Ui.dp(3), 1f);
             r.line2.setPadding(0, Ui.dp(10), 0, 0);
             r.line2.setAutoLinkMask(android.text.util.Linkify.WEB_URLS);
-            r.line2.setLinkTextColor(Ui.ACCENT);
+            r.line2.setLinkTextColor(Ui.LINK);
             Ui.lines(r.line2, 8);
             r.line2.setOnClickListener(v -> ((TextView) v).setMaxLines(((TextView) v).getMaxLines() == 8 ? Integer.MAX_VALUE : 8));
             root.addView(r.line2, Ui.lin(Ui.MATCH, Ui.WRAP));
@@ -529,7 +658,7 @@ final class FeedList extends FrameLayout {
         private void badge(TextView b, Core.Item item) {
             if (item.live) {
                 b.setText("LIVE");
-                b.setBackground(Ui.rounded(0xFFD32F2F, 4));
+                b.setBackground(Ui.rounded(0xFFCC0000, 4));
                 b.setVisibility(VISIBLE);
             } else if (item.durationS >= 0) {
                 b.setText(Ui.duration(item.durationS));
@@ -553,7 +682,7 @@ final class FeedList extends FrameLayout {
             Row r = new Row();
             LinearLayout root = Ui.column(c);
             root.setForeground(Ui.ripple());
-            root.setPadding(0, 0, 0, Ui.dp(18));
+            root.setPadding(0, 0, 0, Ui.dp(20));
             RatioFrame thumb = new RatioFrame(c);
             thumb.setBackgroundColor(Ui.PANEL);
             r.image = new ImageView(c);
@@ -567,7 +696,7 @@ final class FeedList extends FrameLayout {
             root.addView(thumb, Ui.lin(Ui.MATCH, Ui.WRAP));
             LinearLayout info = Ui.row(c);
             info.setGravity(Gravity.TOP);
-            info.setPadding(Ui.dp(12), Ui.dp(11), Ui.dp(12), 0);
+            info.setPadding(Ui.dp(12), Ui.dp(12), Ui.dp(4), 0);
             r.avatar = new ImageView(c);
             r.avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
             r.avatar.setBackgroundColor(Ui.PANEL);
@@ -576,17 +705,19 @@ final class FeedList extends FrameLayout {
             al.rightMargin = Ui.dp(12);
             info.addView(r.avatar, al);
             LinearLayout texts = Ui.column(c);
-            r.title = Ui.lines(Ui.text(c, 15, Ui.TEXT, true), 2);
-            r.title.setLineSpacing(Ui.dp(3), 1f);
+            r.title = Ui.lines(Ui.text(c, 15, Ui.TEXT, false), 2);
+            r.title.setLineSpacing(Ui.dp(2), 1f);
             texts.addView(r.title, Ui.lin(Ui.MATCH, Ui.WRAP));
-            r.line1 = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 1);
-            r.line1.setPadding(0, Ui.dp(6), 0, 0);
+            r.line1 = Ui.lines(Ui.text(c, 12, Ui.MUTE, false), 2);
+            r.line1.setPadding(0, Ui.dp(5), 0, 0);
             texts.addView(r.line1, Ui.lin(Ui.MATCH, Ui.WRAP));
             info.addView(texts, Ui.weight(Ui.WRAP));
             r.more = moreButton(c);
-            LinearLayout.LayoutParams ml = Ui.lin(Ui.dp(36), Ui.dp(36));
+            r.more.setImageResource(R.drawable.ic_more_h);
+            r.more.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.TEXT));
+            LinearLayout.LayoutParams ml = Ui.lin(Ui.dp(40), Ui.dp(32));
             ml.leftMargin = Ui.dp(4);
-            ml.rightMargin = -Ui.dp(8);
+            ml.topMargin = -Ui.dp(6);
             info.addView(r.more, ml);
             root.addView(info, Ui.lin(Ui.MATCH, Ui.WRAP));
             r.line2 = r.line1;

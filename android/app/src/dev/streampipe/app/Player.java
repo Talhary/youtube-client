@@ -347,7 +347,7 @@ final class Player {
     /** 2 = this phone decodes the codec in hardware, 1 = in software only, 0 = not at all. */
     private static final Map<String, Integer> DECODERS = new HashMap<>();
 
-    private static int decoder(String codec, int height) {
+    static int decoder(String codec, int height) {
         String mime = codec.equals("h264") ? "video/avc" : codec.equals("vp9") ? "video/x-vnd.on2.vp9"
                 : codec.equals("av1") ? "video/av01" : null;
         if (mime == null) {
@@ -391,7 +391,7 @@ final class Player {
      * one; among hardware ones the more efficient codec wins (AV1, then VP9, then H.264);
      * in software H.264 is the cheapest.
      */
-    private static List<JSONObject> options(JSONObject streams) {
+    static List<JSONObject> options(JSONObject streams) {
         Map<Integer, JSONObject> best = new java.util.TreeMap<>(java.util.Collections.reverseOrder());
         JSONArray list = streams.optJSONArray("video");
         for (int i = 0; list != null && i < list.length(); i++) {
